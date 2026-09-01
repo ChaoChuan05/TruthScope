@@ -9,6 +9,7 @@ from app.api.v1.router import router as v1Router
 from app.core.config import Settings, getSettings
 from app.core.exceptions import (
     AuthenticationError,
+    PersistenceUnavailableError,
     VerificationAccessError,
     VerificationNotFoundError,
 )
@@ -22,7 +23,12 @@ from app.integrations.retrieval.client import (
     UrlDocumentFetcher,
 )
 from app.integrations.supabase.auth import SupabaseAuthClient
-from app.integrations.supabase.client import InMemoryVerificationRepository
+from app.integrations.supabase.client import (
+    InMemoryVerificationRepository,
+    SupabaseVerificationRepository,
+    VerificationRepositoryProtocol,
+)
+from app.integrations.supabase.gateway import SupabaseRestGateway
 from app.services.verificationService import VerificationService
 
 
@@ -61,7 +67,17 @@ def buildDefaultService(settings: Settings) -> tuple[VerificationService, list[o
         modelB=settings.GONKA_MODEL_B,
         judgeModel=settings.GONKA_JUDGE_MODEL,
     )
-    repository = InMemoryVerificationRepository()
+    repository: VerificationRepositoryProtocol
+    if settings.supabaseConfigured:
+        supabaseGateway = SupabaseRestGateway(
+            baseUrl=str(settings.SUPABASE_URL),
+            apiKey=settings.SUPABASE_KEY or "",
+        )
+        closableResources.append(supabaseGateway)
+        repository = SupabaseVerificationRepository(supabaseGateway)
+    else:
+        repository = InMemoryVerificationRepository()
+
     return VerificationService(workflow, repository), closableResources
 
 
@@ -72,12 +88,13 @@ def createApp(
 ) -> FastAPI:
     appSettings = settings or getSettings()
     configureLogging(appSettings.LOG_LEVEL)
+    supabaseAuthClient: SupabaseAuthClient | None = None
+
     if verificationService is None:
         service, resources = buildDefaultService(appSettings)
     else:
         service = verificationService
         resources = []
-        supabaseAuthClient: SupabaseAuthClient | None = None
     if appSettings.supabaseConfigured:
         supabaseAuthClient = SupabaseAuthClient(
             baseUrl=str(appSettings.SUPABASE_URL),
@@ -127,6 +144,24 @@ def createApp(
                 }
             },
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @application.exception_handler(PersistenceUnavailableError)
+    async def handlePersistenceUnavailable(
+        request: Request,
+        error: PersistenceUnavailableError,
+    ) -> JSONResponse:
+        del error
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": {
+                    "code": "PERSISTENCE_UNAVAILABLE",
+                    "message": "Verification storage is temporarily unavailable.",
+                    "requestId": request.headers.get("X-Request-Id"),
+                    "retryable": True,
+                }
+            },
         )
 
     @application.exception_handler(VerificationNotFoundError)
