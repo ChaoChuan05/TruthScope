@@ -1,0 +1,6 @@
+# Pip-compatible development tools. Runtime dependencies load first.
+-r requirements.txt
+mypy>=1.17,<2
+pytest>=8.4,<10
+pytest-asyncio>=1.1,<2
+ruff>=0.12,<1
