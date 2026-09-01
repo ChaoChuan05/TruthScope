@@ -7,7 +7,11 @@ from fastapi.responses import JSONResponse
 from app.agents.graph import VerificationWorkflow
 from app.api.v1.router import router as v1Router
 from app.core.config import Settings, getSettings
-from app.core.exceptions import VerificationAccessError, VerificationNotFoundError
+from app.core.exceptions import (
+    AuthenticationError,
+    VerificationAccessError,
+    VerificationNotFoundError,
+)
 from app.core.logging import configureLogging
 from app.integrations.gonka.client import GonkaClient, GonkaClientProtocol
 from app.integrations.gonka.fake import UnavailableGonkaClient
@@ -17,6 +21,7 @@ from app.integrations.retrieval.client import (
     NullEvidenceRetriever,
     UrlDocumentFetcher,
 )
+from app.integrations.supabase.auth import SupabaseAuthClient
 from app.integrations.supabase.client import InMemoryVerificationRepository
 from app.services.verificationService import VerificationService
 
@@ -72,6 +77,13 @@ def createApp(
     else:
         service = verificationService
         resources = []
+        supabaseAuthClient: SupabaseAuthClient | None = None
+    if appSettings.supabaseConfigured:
+        supabaseAuthClient = SupabaseAuthClient(
+            baseUrl=str(appSettings.SUPABASE_URL),
+            apiKey=appSettings.SUPABASE_KEY or "",
+        )
+        resources.append(supabaseAuthClient)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -92,10 +104,30 @@ def createApp(
     )
     application.state.verificationService = service
     application.state.settings = appSettings
+    application.state.supabaseAuthClient = supabaseAuthClient
     application.state.persistenceBackend = (
         "memory" if isinstance(service.repository, InMemoryVerificationRepository) else "external"
     )
     application.include_router(v1Router)
+
+    @application.exception_handler(AuthenticationError)
+    async def handleAuthenticationError(
+        request: Request,
+        error: AuthenticationError,
+    ) -> JSONResponse:
+        del error
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={
+                "error": {
+                    "code": "AUTHENTICATION_REQUIRED",
+                    "message": "A valid Supabase access token is required.",
+                    "requestId": request.headers.get("X-Request-Id"),
+                    "retryable": False,
+                }
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @application.exception_handler(VerificationNotFoundError)
     async def handleNotFound(

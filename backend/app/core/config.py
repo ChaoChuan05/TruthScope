@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     def searchConfigured(self) -> bool:
         return bool(self.BRAVE_SEARCH_API_KEY and self.BRAVE_SEARCH_API_KEY.strip())
 
+    @property
+    def supabaseConfigured(self) -> bool:
+        return bool(self.SUPABASE_URL and self.SUPABASE_KEY and self.SUPABASE_KEY.strip())
+
     @model_validator(mode="after")
     def gonkaModelsMustBeDistinct(self) -> "Settings":
         configuredModels = {
