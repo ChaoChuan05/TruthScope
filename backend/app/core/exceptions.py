@@ -26,5 +26,9 @@ class VerificationAccessError(TruthScopeError):
     """Raised when a user cannot access a stored verification."""
 
 
+class AuthenticationError(TruthScopeError):
+    """Raised when a Supabase access token is missing or invalid."""
+
+
 class PersistenceUnavailableError(TruthScopeError):
     """Raised when the configured persistence boundary is unavailable."""
