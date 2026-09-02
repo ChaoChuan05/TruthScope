@@ -86,8 +86,6 @@ class SupabaseRestGateway:
             if responseBody is None:
                 return None
 
-            if responseBody is None:
-                return None
             if not isinstance(responseBody, dict):
                 raise ValueError("Supabase read response must be an object.")
 
