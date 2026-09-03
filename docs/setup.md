@@ -9,7 +9,7 @@ This guide starts from a fresh clone. Run backend commands inside the `backend` 
 - Python 3.12, 3.13, or 3.14; Python 3.13 is recommended and matches the Docker image
 - Gonka Router API key for live AI verification
 - Brave Search API key for evidence retrieval from text claims
-- Supabase credentials only when a teammate-owned persistence contract is available
+- Supabase project URL and backend-only secret key for OAuth token validation and persistent storage
 
 Confirm Python:
 
@@ -102,6 +102,8 @@ Edit `.env` and set:
 ```dotenv
 GONKA_API_KEY=your_gonka_key
 BRAVE_SEARCH_API_KEY=your_brave_key
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_KEY=your_backend_secret_key
 ```
 
 Never commit `.env`, paste keys into logs, or share `result.json` without reviewing it. `.gitignore`
@@ -113,7 +115,7 @@ already excludes `.env` and root `result.json`.
 |---|---:|---|
 | `GONKA_API_KEY` | Live AI | Authenticates Gonka Router calls |
 | `BRAVE_SEARCH_API_KEY` | Text search | Retrieves candidate public sources |
-| `SUPABASE_URL`, `SUPABASE_KEY` | No | Reserved for teammate-owned contract; current app remains in-memory |
+| `SUPABASE_URL`, `SUPABASE_KEY` | Supabase Auth/persistence | Validates Bearer tokens and enables RPC storage; omit both for memory fallback |
 | `GONKA_BASE_URL` | No | `https://api.gonkarouter.io` |
 | `GONKA_ORCHESTRATOR_MODEL` | No | MiniMax claim, planning, and context tasks |
 | `GONKA_MODEL_A` | No | Kimi verifier |
@@ -159,12 +161,13 @@ Expected health response:
   "status": "ok",
   "gonkaConfigured": true,
   "searchConfigured": true,
-  "persistenceBackend": "memory"
+  "persistenceBackend": "external"
 }
 ```
 
-`persistenceBackend: "memory"` is expected. Supabase environment values do not automatically select
-external persistence.
+With both Supabase values configured, the default service reports `persistenceBackend: "external"`.
+If both values are omitted, the backend uses the in-memory fallback and reports
+`persistenceBackend: "memory"`.
 
 ## Run automated checks
 

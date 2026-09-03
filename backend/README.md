@@ -23,7 +23,7 @@ FastAPI
        deterministic scoring
   -> repository contract
        in-memory development adapter
-       teammate-owned Supabase gateway adapter
+       Supabase REST RPC adapter
 ```
 
 Every production AI step goes through GonkaRouter. When `GONKA_API_KEY` is missing, requests fail
@@ -53,8 +53,9 @@ URL input is fetched before claim extraction, and fetched page is retained as us
 URL fetching enforces scheme, hostname, DNS, redirect, content-type, timeout, and size checks.
 Optional Brave Search retrieves candidates for text and URL claims, then fetches original pages
 through same SSRF-safe boundary. Search snippets alone never become evidence. Tests use fixture
-evidence. Supabase integration stays contract-first and assumes no tables, RPCs, RLS policies, or
-schema details.
+evidence. When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the backend validates Supabase
+Bearer tokens and stores verification results through service-role-only REST RPC functions defined
+in `../supabase/migrations`.
 
 ## Setup
 
@@ -127,15 +128,17 @@ URL request:
 ```
 
 Health response includes `gonkaConfigured`, `searchConfigured`, and `persistenceBackend`. Key fields
-report presence only; no credential values are returned. `persistenceBackend: "memory"` means results
-disappear after process restart even when Supabase credentials exist.
+report presence only; no credential values are returned. The default service reports
+`persistenceBackend: "external"` when Supabase is configured. Without Supabase configuration it uses
+the in-memory fallback, whose results disappear after process restart.
 
 Full evidence stays in result state and API responses. Model-stage payloads use bounded excerpts:
 4,000 characters for context/verifiers, 2,500 for judge, and 1,500 for bias audit. This reduces
 latency and provider timeouts without changing stored evidence or deterministic scoring input.
 
-`X-User-Id` is a development-only identity boundary. Production must replace it with verified OAuth
-session/token middleware before exposing private history.
+Verification endpoints require `Authorization: Bearer <Supabase access token>`. The backend validates
+the token through Supabase Auth, obtains the trusted user ID, and enforces record ownership. The
+health endpoint remains public.
 
 `POST /verifications` is synchronous and may take several minutes during provider retries. HTTP 201
 means result record was created; clients must inspect response `status` for `completed`, `degraded`,
@@ -167,7 +170,8 @@ Tests mock external Gonka, search, and persistence boundaries. Real API keys are
 - Live Gonka behavior needs valid credentials and account-available model IDs.
 - A failed distinct verifier remains visible as degraded coverage; one model is never silently
   presented as two independent verifiers.
-- Supabase teammate contract is not supplied; adapter protocol and mapping exist, but no schema is
-  guessed.
-- OAuth provider callbacks and token validation are not implemented.
-- In-memory results disappear on process restart.
+- Supabase persistence requires the migrations in `../supabase/migrations` and backend-only
+  credentials.
+- OAuth provider redirects are handled by the frontend and Supabase; the backend validates the
+  resulting Supabase access token.
+- When Supabase configuration is absent, in-memory fallback results disappear on process restart.

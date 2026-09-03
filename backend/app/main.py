@@ -7,7 +7,12 @@ from fastapi.responses import JSONResponse
 from app.agents.graph import VerificationWorkflow
 from app.api.v1.router import router as v1Router
 from app.core.config import Settings, getSettings
-from app.core.exceptions import VerificationAccessError, VerificationNotFoundError
+from app.core.exceptions import (
+    AuthenticationError,
+    PersistenceUnavailableError,
+    VerificationAccessError,
+    VerificationNotFoundError,
+)
 from app.core.logging import configureLogging
 from app.integrations.gonka.client import GonkaClient, GonkaClientProtocol
 from app.integrations.gonka.fake import UnavailableGonkaClient
@@ -17,7 +22,13 @@ from app.integrations.retrieval.client import (
     NullEvidenceRetriever,
     UrlDocumentFetcher,
 )
-from app.integrations.supabase.client import InMemoryVerificationRepository
+from app.integrations.supabase.auth import SupabaseAuthClient
+from app.integrations.supabase.client import (
+    InMemoryVerificationRepository,
+    SupabaseVerificationRepository,
+    VerificationRepositoryProtocol,
+)
+from app.integrations.supabase.gateway import SupabaseRestGateway
 from app.services.verificationService import VerificationService
 
 
@@ -56,7 +67,17 @@ def buildDefaultService(settings: Settings) -> tuple[VerificationService, list[o
         modelB=settings.GONKA_MODEL_B,
         judgeModel=settings.GONKA_JUDGE_MODEL,
     )
-    repository = InMemoryVerificationRepository()
+    repository: VerificationRepositoryProtocol
+    if settings.supabaseConfigured:
+        supabaseGateway = SupabaseRestGateway(
+            baseUrl=str(settings.SUPABASE_URL),
+            apiKey=settings.SUPABASE_KEY or "",
+        )
+        closableResources.append(supabaseGateway)
+        repository = SupabaseVerificationRepository(supabaseGateway)
+    else:
+        repository = InMemoryVerificationRepository()
+
     return VerificationService(workflow, repository), closableResources
 
 
@@ -67,11 +88,19 @@ def createApp(
 ) -> FastAPI:
     appSettings = settings or getSettings()
     configureLogging(appSettings.LOG_LEVEL)
+    supabaseAuthClient: SupabaseAuthClient | None = None
+
     if verificationService is None:
         service, resources = buildDefaultService(appSettings)
     else:
         service = verificationService
         resources = []
+    if appSettings.supabaseConfigured:
+        supabaseAuthClient = SupabaseAuthClient(
+            baseUrl=str(appSettings.SUPABASE_URL),
+            apiKey=appSettings.SUPABASE_KEY or "",
+        )
+        resources.append(supabaseAuthClient)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -92,10 +121,48 @@ def createApp(
     )
     application.state.verificationService = service
     application.state.settings = appSettings
+    application.state.supabaseAuthClient = supabaseAuthClient
     application.state.persistenceBackend = (
         "memory" if isinstance(service.repository, InMemoryVerificationRepository) else "external"
     )
     application.include_router(v1Router)
+
+    @application.exception_handler(AuthenticationError)
+    async def handleAuthenticationError(
+        request: Request,
+        error: AuthenticationError,
+    ) -> JSONResponse:
+        del error
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={
+                "error": {
+                    "code": "AUTHENTICATION_REQUIRED",
+                    "message": "A valid Supabase access token is required.",
+                    "requestId": request.headers.get("X-Request-Id"),
+                    "retryable": False,
+                }
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @application.exception_handler(PersistenceUnavailableError)
+    async def handlePersistenceUnavailable(
+        request: Request,
+        error: PersistenceUnavailableError,
+    ) -> JSONResponse:
+        del error
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": {
+                    "code": "PERSISTENCE_UNAVAILABLE",
+                    "message": "Verification storage is temporarily unavailable.",
+                    "requestId": request.headers.get("X-Request-Id"),
+                    "retryable": True,
+                }
+            },
+        )
 
     @application.exception_handler(VerificationNotFoundError)
     async def handleNotFound(

@@ -1,9 +1,14 @@
 from typing import Annotated, cast
 
-from fastapi import Header, Request
+from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings
+from app.core.exceptions import AuthenticationError
+from app.integrations.supabase.auth import SupabaseAuthClientProtocol
 from app.services.verificationService import VerificationService
+
+bearerScheme = HTTPBearer(auto_error=False)
 
 
 async def getVerificationService(request: Request) -> VerificationService:
@@ -14,14 +19,30 @@ async def getApplicationSettings(request: Request) -> Settings:
     return cast(Settings, request.app.state.settings)
 
 
-async def getCurrentUserId(
-    xUserId: Annotated[str | None, Header(alias="X-User-Id")] = None,
-) -> str | None:
-    """OAuth boundary placeholder; production must replace trusted-header identity."""
+async def getSupabaseAuthClient(
+    request: Request,
+) -> SupabaseAuthClientProtocol:
+    authClient = getattr(
+        request.app.state,
+        "supabaseAuthClient",
+        None,
+    )
+    if authClient is None:
+        raise AuthenticationError("Supabase authentication is not configured.")
+    return cast(SupabaseAuthClientProtocol, authClient)
 
-    if xUserId is None:
-        return None
-    normalizedUserId = xUserId.strip()
-    if not normalizedUserId or len(normalizedUserId) > 200:
-        return None
-    return normalizedUserId
+
+async def getCurrentUserId(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearerScheme),
+    ],
+    authClient: Annotated[
+        SupabaseAuthClientProtocol,
+        Depends(getSupabaseAuthClient),
+    ],
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise AuthenticationError("Bearer access token is required.")
+
+    return await authClient.getUserId(credentials.credentials)
