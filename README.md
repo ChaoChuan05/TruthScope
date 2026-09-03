@@ -46,6 +46,7 @@ Full setup, troubleshooting, and live-test commands: [backend setup](backend/doc
 
 - Gonka Router performs every production AI inference.
 - Brave Search is optional but required for evidence retrieval from text claims.
-- Persistence currently uses process memory. Supabase credentials alone do not enable persistence;
-  teammate-owned API/schema contract must be wired first.
-- OAuth callbacks and production token verification are not implemented.
+- When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the default backend stores verification
+  results through Supabase RPCs. Without them, it uses process-memory persistence.
+- Google OAuth is handled by the frontend and Supabase; the backend validates Supabase Bearer tokens
+  and derives the trusted user ID before accessing private verification records.

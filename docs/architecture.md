@@ -56,7 +56,7 @@ budget. HTTP 429 responses wait 30 seconds by default and honor `Retry-After` up
 - Retrieved page instructions cannot replace system prompts.
 - Gonka response metadata is normalized at integration boundary.
 - Agent nodes never write directly to persistence.
-- Supabase adapter contains no database table, migration, RPC, or RLS assumptions.
+- Supabase Auth, REST RPC access, repository mapping, and SQL migrations remain   isolated behind the Supabase integration boundary.
 
 ## Scoring
 
@@ -111,10 +111,14 @@ serving as another independent verdict vote.
 
 ## Persistence
 
-Default repository is in-memory and reports `persistenceBackend: "memory"`. Supabase environment
-variables are accepted as configuration placeholders but do not select persistence. External storage
-requires teammate-owned API/schema contract, mapping, ownership behavior, and failure tests. Backend
-does not create or guess tables, migrations, RLS policies, triggers, or RPCs.
+When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the default service uses the Supabase REST
+gateway and reports `persistenceBackend: "external"`. Verification results are saved and retrieved
+through service-role-only RPC functions. Bearer tokens are validated through Supabase Auth, and the
+repository enforces record ownership before returning private data.
+
+Without Supabase configuration, the backend uses the in-memory fallback and reports
+`persistenceBackend: "memory"`. Tables, triggers, RLS policies, and RPC functions are versioned in
+`../supabase/migrations`.
 
 ## API boundary
 

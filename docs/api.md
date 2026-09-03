@@ -35,7 +35,8 @@ targets. Loopback, private-network, link-local, and unsafe redirect destinations
 Workflow is synchronous and provider retries can take several minutes. HTTP `201` means result
 record was created, not that every model completed. Always inspect response `status`:
 
-- `completed`: critical workflow stages completed.
+- `complete`: critical workflow stages completed.
+- `inconclusive`: the workflow finished, but available evidence was insufficient for a conclusion.
 - `degraded`: partial result exists, but one or more model, retrieval, audit, or persistence stages
   failed.
 - `failed`: workflow stopped before meaningful verification output.
@@ -44,10 +45,12 @@ record was created, not that every model completed. Always inspect response `sta
 
 ## Read verification
 
-`GET /api/v1/verifications/{verificationId}` returns stored result. If record has owner, caller must
-present same development `X-User-Id`; production must replace header with verified OAuth identity.
+`GET /api/v1/verifications/{verificationId}` returns the stored result. The caller must provide
+`Authorization: Bearer <Supabase access token>`. The backend validates the token and only returns a
+record owned by the authenticated user.
 
-Current storage is process memory. Records disappear after backend restart.
+When Supabase is configured, records are stored through the Supabase RPC gateway. Without Supabase
+configuration, the development fallback uses process memory and records disappear after restart.
 
 ## Read evidence
 
@@ -60,22 +63,30 @@ times remain separate.
 ## Health
 
 `GET /api/v1/health` reports process health plus `gonkaConfigured`, `searchConfigured`, and
-`persistenceBackend`. Key fields expose presence only. `persistenceBackend` remains `memory` until
-teammate-owned Supabase contract is wired. Endpoint never returns credentials or provider internals.
+`persistenceBackend`. Key fields expose presence only. The default service reports `external` when
+Supabase is configured and `memory` when the in-memory fallback is active. The endpoint never
+returns credentials or provider internals.
 
 ```json
 {
   "status": "ok",
   "gonkaConfigured": true,
   "searchConfigured": true,
-  "persistenceBackend": "memory"
+  "persistenceBackend": "external"
 }
 ```
 
-## Development identity
+## Authentication
 
-Optional `X-User-Id` associates a record with a development user. Same header is then required to
-read it. This is not production authentication and must be replaced with verified OAuth middleware.
+Verification endpoints require a Supabase access token:
+
+```http
+Authorization: Bearer <access-token>
+```
+
+The backend validates it through Supabase Auth and uses the verified Supabase user ID for ownership
+checks. `GET /api/v1/health` remains public.
+
 
 ## Errors
 
@@ -95,8 +106,9 @@ Expected public errors use:
 Common HTTP responses:
 
 - `201`: verification record created; inspect workflow `status`.
-- `403`: caller does not own requested development record.
-- `404`: verification ID not found in current process memory.
+- `401`: Supabase Bearer token is missing, invalid, or expired.
+- `403`: authenticated caller does not own the requested verification record.
+- `404`: verification ID was not found.
 - `422`: request failed schema, size, URL, or safety validation.
 
 Provider-stage failures normally appear inside `VerificationResult.errors` rather than becoming raw
