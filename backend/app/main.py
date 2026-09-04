@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.agents.graph import VerificationWorkflow
@@ -118,6 +119,14 @@ def createApp(
             "they do not guarantee truth or political neutrality."
         ),
         lifespan=lifespan,
+    )
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=appSettings.corsAllowedOrigins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Accept", "Authorization", "Content-Type", "X-Request-Id"],
+        max_age=600,
     )
     application.state.verificationService = service
     application.state.settings = appSettings

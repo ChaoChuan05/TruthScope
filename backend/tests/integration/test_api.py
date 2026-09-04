@@ -147,3 +147,34 @@ async def test_verificationEndpoints_requireBearerToken(
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
     assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+async def test_corsPreflight_allowsConfiguredFrontendOrigin(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    service, _ = serviceFactory([sampleEvidence])
+    application = createApp(
+        settings=Settings(
+            _env_file=None,
+            CORS_ALLOWED_ORIGINS="http://127.0.0.1:5500",
+        ),
+        verificationService=service,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://test",
+    ) as client:
+        response = await client.options(
+            "/api/v1/verifications",
+            headers={
+                "Origin": "http://127.0.0.1:5500",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "http://127.0.0.1:5500"
+    assert "authorization" in response.headers["Access-Control-Allow-Headers"].lower()

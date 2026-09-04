@@ -69,3 +69,25 @@ def test_exampleEnvironment_acceptsBlankOptionalSettings(monkeypatch: pytest.Mon
     assert settings.SUPABASE_KEY is None
     assert settings.BRAVE_SEARCH_API_KEY is None
     assert settings.searchConfigured is False
+
+
+def test_corsOrigins_acceptExplicitOriginsAndRemoveDuplicates() -> None:
+    settings = Settings(
+        _env_file=None,
+        CORS_ALLOWED_ORIGINS=(
+            "http://127.0.0.1:5500/, https://truthscope.example, http://127.0.0.1:5500"
+        ),
+    )
+    assert settings.corsAllowedOrigins == [
+        "http://127.0.0.1:5500",
+        "https://truthscope.example",
+    ]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["*", "file:///tmp/frontend", "https://example.com/path", ""],
+)
+def test_corsOrigins_rejectUnsafeOrNonOriginValues(origin: str) -> None:
+    with pytest.raises(ValidationError, match="CORS"):
+        Settings(_env_file=None, CORS_ALLOWED_ORIGINS=origin)

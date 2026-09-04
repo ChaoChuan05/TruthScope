@@ -56,7 +56,21 @@ budget. HTTP 429 responses wait 30 seconds by default and honor `Retry-After` up
 - Retrieved page instructions cannot replace system prompts.
 - Gonka response metadata is normalized at integration boundary.
 - Agent nodes never write directly to persistence.
-- Supabase Auth, REST RPC access, repository mapping, and SQL migrations remain   isolated behind the Supabase integration boundary.
+- Supabase Auth, REST RPC access, repository mapping, and SQL migrations remain isolated behind
+  the Supabase integration boundary.
+
+### Browser frontend
+
+- Supabase JS receives only project URL plus publishable/legacy `anon` key.
+- Google OAuth redirects through Supabase Auth. Frontend sends resulting access token as Bearer
+  authorization to backend verification endpoints.
+- Backend validates token independently; hiding Verify and History controls is UX, not
+  authorization.
+- History summaries paginate through every authenticated user-owned `verification_runs` row under
+  Supabase RLS. Opening a current record uses backend ownership-protected full-result endpoint;
+  legacy records fall back to stored `raw_result` when available.
+- Backend, model, and source strings render as text. Source links accept only HTTP/HTTPS URLs.
+- Gonka Request IDs are trace metadata, not proof of blockchain storage or immutable verdicts.
 
 ## Scoring
 

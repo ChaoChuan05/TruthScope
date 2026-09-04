@@ -32,8 +32,10 @@ URL request:
 `inputType` may be omitted; backend infers URL versus text. URL input accepts only public HTTP/HTTPS
 targets. Loopback, private-network, link-local, and unsafe redirect destinations are rejected.
 
-Workflow is synchronous and provider retries can take several minutes. HTTP `201` means result
-record was created, not that every model completed. Always inspect response `status`:
+Workflow is synchronous and provider retries can take several minutes. Clients receive no live
+node events from this endpoint, so any in-flight stage display must be labelled estimated. Final
+`inferenceRecords` provide confirmed task, model, latency, and request metadata. HTTP `201` means
+result record was created, not that every model completed. Always inspect response `status`:
 
 - `complete`: critical workflow stages completed.
 - `inconclusive`: the workflow finished, but available evidence was insufficient for a conclusion.
@@ -86,6 +88,9 @@ Authorization: Bearer <access-token>
 
 The backend validates it through Supabase Auth and uses the verified Supabase user ID for ownership
 checks. `GET /api/v1/health` remains public.
+
+Browser requests are accepted only from explicit `CORS_ALLOWED_ORIGINS`. Default development
+origins are `http://127.0.0.1:5500` and `http://localhost:5500`; wildcard origins are rejected.
 
 
 ## Errors

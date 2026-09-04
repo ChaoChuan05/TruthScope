@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic import Field, HttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
+    CORS_ALLOWED_ORIGINS: str = "http://127.0.0.1:5500,http://localhost:5500"
     GONKA_BASE_URL: HttpUrl = HttpUrl("https://api.gonkarouter.io")
     GONKA_API_KEY: str | None = None
     GONKA_ORCHESTRATOR_MODEL: str = "MiniMaxAI/MiniMax-M2.7"
@@ -67,6 +69,32 @@ class Settings(BaseSettings):
     @property
     def supabaseConfigured(self) -> bool:
         return bool(self.SUPABASE_URL and self.SUPABASE_KEY and self.SUPABASE_KEY.strip())
+
+    @property
+    def corsAllowedOrigins(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
+
+    @field_validator("CORS_ALLOWED_ORIGINS")
+    @classmethod
+    def corsOriginsMustBeExplicitHttpOrigins(cls, value: str) -> str:
+        origins = [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
+        if not origins:
+            raise ValueError("At least one CORS origin is required.")
+
+        for origin in origins:
+            parsedOrigin = urlsplit(origin)
+            if (
+                parsedOrigin.scheme not in {"http", "https"}
+                or not parsedOrigin.netloc
+                or parsedOrigin.path
+                or parsedOrigin.query
+                or parsedOrigin.fragment
+                or parsedOrigin.username
+                or parsedOrigin.password
+            ):
+                raise ValueError("CORS origins must be explicit HTTP(S) origins without paths.")
+
+        return ",".join(dict.fromkeys(origins))
 
     @model_validator(mode="after")
     def gonkaModelsMustBeDistinct(self) -> "Settings":

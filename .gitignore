@@ -22,6 +22,10 @@ env/
 .agents/
 .codex/
 
+# Frontend local public configuration
+frontend/config.js
+!frontend/config.example.js
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
@@ -58,4 +62,3 @@ build/
 *.swo
 .DS_Store
 Thumbs.db
-

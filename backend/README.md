@@ -140,6 +140,9 @@ Verification endpoints require `Authorization: Bearer <Supabase access token>`. 
 the token through Supabase Auth, obtains the trusted user ID, and enforces record ownership. The
 health endpoint remains public.
 
+Browser access uses an explicit CORS allow-list. `CORS_ALLOWED_ORIGINS` defaults to local frontend
+origins on port 5500; add deployed frontend origin without paths or wildcards before deployment.
+
 `POST /verifications` is synchronous and may take several minutes during provider retries. HTTP 201
 means result record was created; clients must inspect response `status` for `completed`, `degraded`,
 or `failed`.
@@ -174,4 +177,5 @@ Tests mock external Gonka, search, and persistence boundaries. Real API keys are
   credentials.
 - OAuth provider redirects are handled by the frontend and Supabase; the backend validates the
   resulting Supabase access token.
+- Frontend and Google OAuth redirect setup: [`../frontend/README.md`](../frontend/README.md).
 - When Supabase configuration is absent, in-memory fallback results disappear on process restart.

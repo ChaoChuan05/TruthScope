@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TruthScope OAuth Test</title>
+</head>
+<body>
+  <h1>TruthScope OAuth Test</h1>
+
+  <button id="loginBtn">Sign in with Google</button>
+  <button id="logoutBtn" hidden>Sign out</button>
+
+  <p id="statusBox">Checking login status...</p>
+
+  <script src="config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <script>
+    const appConfig = window.TRUTHSCOPE_CONFIG || {};
+    const SUPABASE_URL = appConfig.SUPABASE_URL;
+    const SUPABASE_PUBLISHABLE_KEY = appConfig.SUPABASE_PUBLISHABLE_KEY;
+
+    const supabaseClient = window.supabase.createClient(
+      SUPABASE_URL,
+      SUPABASE_PUBLISHABLE_KEY
+    );
+
+    const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const statusBox = document.getElementById('statusBox');
+
+    async function showSession() {
+      const {
+        data: { session },
+        error
+      } = await supabaseClient.auth.getSession();
+
+      if (error) {
+        statusBox.textContent = 'Error: ' + error.message;
+        return;
+      }
+
+      if (session) {
+        statusBox.textContent = 'Logged in as: ' + session.user.email;
+        loginBtn.hidden = true;
+        logoutBtn.hidden = false;
+      } else {
+        statusBox.textContent = 'Not logged in';
+        loginBtn.hidden = false;
+        logoutBtn.hidden = true;
+      }
+    }
+
+    loginBtn.addEventListener('click', async () => {
+      const { error } = await supabaseClient.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: appConfig.OAUTH_REDIRECT_URL || window.location.origin + window.location.pathname
+        }
+      });
+
+      if (error) {
+        statusBox.textContent = 'Login error: ' + error.message;
+      }
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+      await supabaseClient.auth.signOut();
+      await showSession();
+    });
+
+    supabaseClient.auth.onAuthStateChange(() => {
+      showSession();
+    });
+
+    showSession();
+  </script>
+</body>
+</html>

@@ -116,6 +116,7 @@ already excludes `.env` and root `result.json`.
 | `GONKA_API_KEY` | Live AI | Authenticates Gonka Router calls |
 | `BRAVE_SEARCH_API_KEY` | Text search | Retrieves candidate public sources |
 | `SUPABASE_URL`, `SUPABASE_KEY` | Supabase Auth/persistence | Validates Bearer tokens and enables RPC storage; omit both for memory fallback |
+| `CORS_ALLOWED_ORIGINS` | Browser frontend | Exact comma-separated origins allowed to call API; defaults to local port 5500 |
 | `GONKA_BASE_URL` | No | `https://api.gonkarouter.io` |
 | `GONKA_ORCHESTRATOR_MODEL` | No | MiniMax claim, planning, and context tasks |
 | `GONKA_MODEL_A` | No | Kimi verifier |
@@ -195,11 +196,18 @@ pytest
 
 Start backend in one terminal. From repository root in another terminal:
 
+Obtain a signed-in user's Supabase access token from frontend session, then export it for curl:
+
+```bash
+export TRUTHSCOPE_ACCESS_TOKEN='paste-access-token-here'
+```
+
 ```bash
 curl -sS --max-time 360 \
   -o result.json \
   -w 'HTTP %{http_code}\n' \
   -X POST http://127.0.0.1:8000/api/v1/verifications \
+  -H "Authorization: Bearer ${TRUTHSCOPE_ACCESS_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{
     "input": "Malaysia reported a population of 34.1 million in 2024.",
@@ -234,6 +242,12 @@ PY
 
 Successful full flow normally reports `completed`. `degraded` means record remains usable but one or
 more external stages failed. `failed` means workflow stopped before meaningful verification output.
+
+## Run frontend
+
+Frontend authentication and OAuth setup live in [`frontend/README.md`](../frontend/README.md).
+Use its `http://127.0.0.1:5500/` origin or update both `CORS_ALLOWED_ORIGINS` and Supabase redirect
+configuration when using another address.
 
 ## Docker
 
