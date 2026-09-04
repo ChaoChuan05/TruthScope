@@ -1,0 +1,48 @@
+name: truthscope
+
+services:
+  backend:
+    image: truthscope-backend:local
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      CORS_ALLOWED_ORIGINS: "${BACKEND_CORS_ALLOWED_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}"
+    ports:
+      - "8000:8000"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  frontend:
+    image: truthscope-frontend:local
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      API_BASE_URL: "${FRONTEND_API_BASE_URL:?Set FRONTEND_API_BASE_URL in compose.env}"
+      OAUTH_REDIRECT_URL: "${FRONTEND_OAUTH_REDIRECT_URL:?Set FRONTEND_OAUTH_REDIRECT_URL in compose.env}"
+      SUPABASE_URL: "${FRONTEND_SUPABASE_URL:?Set FRONTEND_SUPABASE_URL in compose.env}"
+      SUPABASE_PUBLISHABLE_KEY: "${FRONTEND_SUPABASE_PUBLISHABLE_KEY:?Set FRONTEND_SUPABASE_PUBLISHABLE_KEY in compose.env}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

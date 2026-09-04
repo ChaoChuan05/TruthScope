@@ -1,225 +1,355 @@
-# Backend setup and local development
+# TruthScope setup and local development
 
-This guide starts from a fresh clone. Run backend commands inside the `backend` directory because
-`.env.example`, `pyproject.toml`, and application imports live there.
+This guide configures backend, frontend, Supabase, Google OAuth, automated tests, and one live
+verification from a fresh clone.
 
-## Prerequisites
+Run repository commands from project root unless section says <code>cd backend</code> or
+<code>cd frontend</code>.
+
+## 1. Prerequisites
+
+Required:
 
 - Git
-- Python 3.12, 3.13, or 3.14; Python 3.13 is recommended and matches the Docker image
-- Gonka Router API key for live AI verification
-- Brave Search API key for evidence retrieval from text claims
-- Supabase project URL and backend-only secret key for OAuth token validation and persistent storage
+- Python 3.12, 3.13, or 3.14
+- modern browser
+- Supabase project for login and protected routes
+- Google OAuth Web application
+- Gonka Router API key for live AI calls
+- Brave Search API key for live text-claim evidence retrieval
 
-Confirm Python:
+Optional:
 
-```bash
-python --version
-```
+- Docker Engine with Docker Compose v2 for the complete containerized stack
 
-On Linux/macOS, command may be `python3`. On Windows, use `py -3.13` when `python` does not select
-supported version.
+Python 3.13 is recommended and matches Docker image.
 
-## Option A: uv setup
+Check tools:
 
-`uv` is primary project workflow because `uv.lock` pins full dependency graph.
+~~~bash
+git --version
+python3 --version
+~~~
 
-Install `uv` using its official instructions or through existing Python:
+Windows may use <code>py -3.13</code> instead of <code>python3</code>.
 
-```bash
-python -m pip install uv
-```
+## 2. Clone and enter repository
+
+~~~bash
+git clone https://github.com/ChaoChuan05/TruthScope.git
+cd TruthScope
+~~~
+
+If repository already exists, start from its root. Backend <code>.env.example</code> is inside
+<code>backend/</code>, not root.
+
+## 3. Create Python environment
+
+Choose uv or standard venv/pip. Do not mix both inside same environment.
+
+### Option A: uv
+
+Install uv through official installer or existing Python:
+
+~~~bash
+python3 -m pip install uv
+~~~
 
 Then:
 
-```bash
+~~~bash
 cd backend
 uv sync --extra dev
-```
+~~~
 
-`uv` creates `backend/.venv` automatically. Commands do not require manual activation:
+uv creates <code>backend/.venv</code>. Activation is optional; use <code>uv run</code> before
+commands.
 
-```bash
-uv run pytest
-uv run uvicorn app.main:app --reload
-```
+### Option B: venv and pip on Linux/macOS
 
-## Option B: standard venv and pip
-
-`requirements.txt` installs runtime dependencies. `requirements-dev.txt` installs runtime plus test,
-lint, and type-check tools. Their direct ranges mirror canonical `pyproject.toml` declarations.
-
-### Linux or macOS
-
-```bash
+~~~bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
-```
+~~~
 
-If `venv` is unavailable on Linux, install your distribution's Python venv package first. Exit
-environment later with `deactivate`.
+Exit later with:
 
-### Windows PowerShell
+~~~bash
+deactivate
+~~~
 
-```powershell
+### Option C: venv and pip on Windows PowerShell
+
+~~~powershell
 cd backend
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
-```
+~~~
 
-If PowerShell blocks activation, allow scripts only for current terminal, then retry:
+If PowerShell blocks activation:
 
-```powershell
+~~~powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
-```
+~~~
 
-Exit environment later with `deactivate`.
+Dependency files:
 
-## Environment configuration
+- <code>pyproject.toml</code>: canonical project requirements;
+- <code>uv.lock</code>: complete locked uv graph;
+- <code>requirements.txt</code>: pip runtime ranges;
+- <code>requirements-dev.txt</code>: pip runtime and development ranges.
 
-Create local file from backend directory:
+## 4. Configure backend environment
+
+From <code>backend/</code>:
 
 Linux/macOS:
 
-```bash
+~~~bash
 cp .env.example .env
-```
+~~~
 
 Windows PowerShell:
 
-```powershell
+~~~powershell
 Copy-Item .env.example .env
-```
+~~~
 
-Edit `.env` and set:
+Minimum useful local configuration:
 
-```dotenv
+~~~dotenv
 GONKA_API_KEY=your_gonka_key
 BRAVE_SEARCH_API_KEY=your_brave_key
 SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_KEY=your_backend_secret_key
-```
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:5500,http://localhost:5500
+~~~
 
-Never commit `.env`, paste keys into logs, or share `result.json` without reviewing it. `.gitignore`
-already excludes `.env` and root `result.json`.
+Use backend-only Supabase secret or legacy <code>service_role</code> key for
+<code>SUPABASE_KEY</code>. Never expose it to frontend.
 
-### Environment variables
+### Environment reference
 
-| Variable | Required | Default / purpose |
-|---|---:|---|
-| `GONKA_API_KEY` | Live AI | Authenticates Gonka Router calls |
-| `BRAVE_SEARCH_API_KEY` | Text search | Retrieves candidate public sources |
-| `SUPABASE_URL`, `SUPABASE_KEY` | Supabase Auth/persistence | Validates Bearer tokens and enables RPC storage; omit both for memory fallback |
-| `CORS_ALLOWED_ORIGINS` | Browser frontend | Exact comma-separated origins allowed to call API; defaults to local port 5500 |
-| `GONKA_BASE_URL` | No | `https://api.gonkarouter.io` |
-| `GONKA_ORCHESTRATOR_MODEL` | No | MiniMax claim, planning, and context tasks |
-| `GONKA_MODEL_A` | No | Kimi verifier |
-| `GONKA_MODEL_B` | No | MiniMax verifier |
-| `GONKA_JUDGE_MODEL` | No | DeepSeek consensus judge |
-| `GONKA_BIAS_AUDITOR_MODEL` | No | MiniMax bias auditor |
-| `GONKA_PARALLEL_VERIFIERS` | No | `false`; sequential is safer for provider capacity |
-| `GONKA_VERIFIER_TIMEOUT_SECONDS` | No | `120` |
-| `GONKA_VERIFIER_MAX_RETRIES` | No | `1` |
-| `GONKA_JUDGE_TIMEOUT_SECONDS` | No | `75` |
-| `GONKA_JUDGE_MAX_RETRIES` | No | `1` |
-| `GONKA_AUDIT_TIMEOUT_SECONDS` | No | `60` |
-| `GONKA_AUDIT_MAX_RETRIES` | No | `1` |
-| `MAX_INPUT_CHARS` | No | `5000` |
-| `MAX_EVIDENCE_PER_CLAIM` | No | `12` |
+| Variable | Default | Purpose |
+|---|---|---|
+| <code>APP_ENV</code> | <code>development</code> | Runtime label |
+| <code>LOG_LEVEL</code> | <code>INFO</code> | Python logging level |
+| <code>CORS_ALLOWED_ORIGINS</code> | Local port 5500 origins | Exact browser origins |
+| <code>GONKA_BASE_URL</code> | <code>https://api.gonkarouter.io</code> | Gonka base |
+| <code>GONKA_API_KEY</code> | empty | Required for live AI |
+| <code>GONKA_ORCHESTRATOR_MODEL</code> | MiniMax M2.7 | Extraction, planning, context |
+| <code>GONKA_MODEL_A</code> | Kimi K2.6 | Verifier A |
+| <code>GONKA_MODEL_B</code> | MiniMax M2.7 | Verifier B |
+| <code>GONKA_JUDGE_MODEL</code> | DeepSeek V4 Flash | Consensus judge |
+| <code>GONKA_BIAS_AUDITOR_MODEL</code> | MiniMax M2.7 | Bias auditor |
+| <code>GONKA_TIMEOUT_SECONDS</code> | <code>30</code> | Orchestration timeout |
+| <code>GONKA_MAX_RETRIES</code> | <code>2</code> | Orchestration retries |
+| <code>GONKA_MAX_TOKENS</code> | <code>2048</code> | Maximum output tokens per call |
+| <code>GONKA_PARALLEL_VERIFIERS</code> | <code>false</code> | Concurrent verifier opt-in |
+| <code>GONKA_VERIFIER_TIMEOUT_SECONDS</code> | <code>120</code> | Verifier timeout |
+| <code>GONKA_VERIFIER_MAX_RETRIES</code> | <code>1</code> | Verifier retries |
+| <code>GONKA_JUDGE_TIMEOUT_SECONDS</code> | <code>75</code> | Judge timeout |
+| <code>GONKA_JUDGE_MAX_RETRIES</code> | <code>1</code> | Judge retries |
+| <code>GONKA_AUDIT_TIMEOUT_SECONDS</code> | <code>60</code> | Audit timeout |
+| <code>GONKA_AUDIT_MAX_RETRIES</code> | <code>1</code> | Audit retries |
+| <code>MAX_EVIDENCE_PER_CLAIM</code> | <code>12</code> | Retrieval evidence bound |
+| <code>MAX_INPUT_CHARS</code> | <code>5000</code> | Declared; API schema fixes 5,000 |
+| <code>BRAVE_SEARCH_BASE_URL</code> | Brave API | Search base |
+| <code>BRAVE_SEARCH_API_KEY</code> | empty | Live text evidence search |
+| <code>BRAVE_SEARCH_COUNTRY</code> | <code>MY</code> | Search country |
+| <code>BRAVE_SEARCH_LANGUAGE</code> | <code>en</code> | Search language |
+| <code>BRAVE_SEARCH_RESULTS_PER_QUERY</code> | <code>3</code> | Candidates per query |
+| <code>SUPABASE_URL</code> | empty | Auth and database API |
+| <code>SUPABASE_KEY</code> | empty | Backend-only Auth/RPC key |
 
-See `.env.example` for complete list and exact model IDs.
+Verifier A, verifier B, and judge model IDs must be distinct. Application startup fails when they
+duplicate.
 
-## Run backend
+## 5. Prepare Supabase
 
-With activated venv:
+Repository contains ordered SQL migrations under <code>supabase/migrations/</code>:
 
-```bash
-uvicorn app.main:app --reload
-```
+~~~text
+20260902010000_create_core_tables.sql
+20260902020000_create_profile_trigger.sql
+20260902030000_add_rls_policies.sql
+20260902040000_gonka_verification_result_schema.sql
+20260902050000_save_verification_result.sql
+20260902060000_get_verification_result.sql
+~~~
 
-With uv:
+Supabase/database owner must review and apply them in order through team's approved Supabase
+migration process. They create:
 
-```bash
+- user profiles linked to <code>auth.users</code>;
+- verification summary and normalized detail tables;
+- owner-only Row Level Security policies for browser reads;
+- profile creation trigger; and
+- service-only save/read RPC functions used by backend.
+
+Backend does not apply migrations automatically.
+
+Get values from Supabase project settings:
+
+- project URL for backend and frontend;
+- publishable or legacy <code>anon</code> key for frontend;
+- backend secret or legacy <code>service_role</code> key for backend.
+
+## 6. Configure Google OAuth
+
+### Supabase Dashboard
+
+1. Open **Authentication > URL Configuration**.
+2. Set local Site URL to <code>http://127.0.0.1:5500/</code>.
+3. Add <code>http://127.0.0.1:5500/</code> to Redirect URLs.
+4. Open **Authentication > Providers > Google**.
+5. Enable Google and enter Google client ID and secret.
+
+### Google Auth Platform
+
+Create OAuth client of type **Web application**.
+
+Authorized JavaScript origin:
+
+~~~text
+http://127.0.0.1:5500
+~~~
+
+Authorized redirect URI:
+
+~~~text
+https://YOUR_PROJECT_REF.supabase.co/auth/v1/callback
+~~~
+
+Google redirects to Supabase callback first. Supabase then redirects to configured frontend URL.
+
+Use exact same scheme, hostname, port, and path. <code>localhost</code> and
+<code>127.0.0.1</code> are different origins.
+
+## 7. Configure frontend
+
+Return to repository root, then:
+
+~~~bash
+cp frontend/config.example.js frontend/config.js
+~~~
+
+Edit <code>frontend/config.js</code>:
+
+~~~js
+window.TRUTHSCOPE_CONFIG = Object.freeze({
+  API_BASE_URL: "http://127.0.0.1:8000/api/v1",
+  OAUTH_REDIRECT_URL: "http://127.0.0.1:5500/",
+  SUPABASE_URL: "https://YOUR_PROJECT_REF.supabase.co",
+  SUPABASE_PUBLISHABLE_KEY: "YOUR_PUBLIC_PUBLISHABLE_OR_ANON_KEY",
+});
+~~~
+
+<code>frontend/config.js</code> is ignored by Git. It still reaches every browser user, so only
+public values belong there.
+
+## 8. Run application
+
+### Terminal one: backend with uv
+
+~~~bash
+cd backend
 uv run uvicorn app.main:app --reload
-```
+~~~
 
-Open:
+With activated pip venv:
 
-- Health: <http://127.0.0.1:8000/api/v1/health>
-- Swagger UI: <http://127.0.0.1:8000/docs>
-- OpenAPI JSON: <http://127.0.0.1:8000/openapi.json>
+~~~bash
+cd backend
+uvicorn app.main:app --reload
+~~~
 
-Expected health response:
+### Terminal two: frontend
 
-```json
+~~~bash
+cd frontend
+python3 -m http.server 5500 --bind 127.0.0.1
+~~~
+
+Windows may use:
+
+~~~powershell
+cd frontend
+py -3.13 -m http.server 5500 --bind 127.0.0.1
+~~~
+
+Open <http://127.0.0.1:5500/>.
+
+## 9. Check health
+
+~~~bash
+curl -sS http://127.0.0.1:8000/api/v1/health
+~~~
+
+Expected fully configured shape:
+
+~~~json
 {
   "status": "ok",
   "gonkaConfigured": true,
   "searchConfigured": true,
   "persistenceBackend": "external"
 }
-```
+~~~
 
-With both Supabase values configured, the default service reports `persistenceBackend: "external"`.
-If both values are omitted, the backend uses the in-memory fallback and reports
-`persistenceBackend: "memory"`.
+Health reports configuration presence, not successful live calls.
 
-## Run automated checks
+## 10. Test through browser
 
-No real API keys are required; tests mock external boundaries.
+1. Open frontend.
+2. Sign in with Google.
+3. Confirm user name and History appear.
+4. Enter:
 
-With uv:
+~~~text
+Malaysia reported a population of 34.1 million in 2024.
+~~~
 
-```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy app
-uv run pytest
-```
+5. Select **Run Verification**.
+6. Watch expandable estimated progress panel.
+7. Wait for final result.
+8. Confirm:
+   - status is complete, inconclusive, degraded, or failed;
+   - evidence links open public source pages;
+   - two verifier analyses appear on complete run;
+   - judge and bias audit appear on complete run;
+   - confirmed pipeline records show served model and request ID;
+   - History contains saved result.
 
-With activated venv:
+## 11. Test through curl
 
-```bash
-ruff format --check .
-ruff check .
-mypy app
-pytest
-```
+Obtain current Supabase user access token from authorized local session. Treat it as secret.
 
-## Live verification test
-
-Start backend in one terminal. From repository root in another terminal:
-
-Obtain a signed-in user's Supabase access token from frontend session, then export it for curl:
-
-```bash
+~~~bash
 export TRUTHSCOPE_ACCESS_TOKEN='paste-access-token-here'
-```
 
-```bash
 curl -sS --max-time 360 \
   -o result.json \
   -w 'HTTP %{http_code}\n' \
   -X POST http://127.0.0.1:8000/api/v1/verifications \
-  -H "Authorization: Bearer ${TRUTHSCOPE_ACCESS_TOKEN}" \
+  -H "Authorization: Bearer $TRUTHSCOPE_ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "input": "Malaysia reported a population of 34.1 million in 2024.",
     "inputType": "text"
   }'
-```
+~~~
 
-HTTP `201` means verification record was created. It does not guarantee every external model
-succeeded. Inspect workflow status:
+Inspect safe summary:
 
-```bash
-python - <<'PY'
+~~~bash
+python3 - <<'PY'
 import json
 
 with open("result.json", encoding="utf-8") as file:
@@ -236,67 +366,157 @@ print("score:", data["score"])
 print("errors:", data["errors"])
 
 for record in data["inferenceRecords"]:
-    print(record["taskName"], record["requestedModel"], record["servedModel"])
+    print(
+        record["taskName"],
+        "| requested:", record["requestedModel"],
+        "| served:", record["servedModel"],
+        "| request ID:", record["requestId"],
+    )
 PY
-```
+~~~
 
-Successful full flow normally reports `completed`. `degraded` means record remains usable but one or
-more external stages failed. `failed` means workflow stopped before meaningful verification output.
+HTTP 201 means result object was produced. Inspect body <code>status</code>.
 
-## Run frontend
+## 12. Run automated checks
 
-Frontend authentication and OAuth setup live in [`frontend/README.md`](../frontend/README.md).
-Use its `http://127.0.0.1:5500/` origin or update both `CORS_ALLOWED_ORIGINS` and Supabase redirect
-configuration when using another address.
+Tests use fake Gonka, retrieval, Auth, and persistence boundaries. Real keys are not needed.
 
-## Docker
+With uv:
 
-Docker runs production dependencies only:
-
-```bash
+~~~bash
 cd backend
-docker build -t truthscope-backend .
-docker run --rm --env-file .env -p 8000:8000 truthscope-backend
-```
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy app
+uv run pytest
+~~~
 
-Do not bake `.env` into image or commit it.
+With activated venv:
 
-## Troubleshooting
+~~~bash
+cd backend
+ruff format --check .
+ruff check .
+mypy app
+pytest
+~~~
 
-### `cp: cannot stat '.env.example'`
+## 13. Run with Docker
 
-Command ran from repository root. Change into backend first:
+The repository includes backend and frontend images plus a two-service Compose stack:
 
-```bash
+~~~bash
+cp compose.env.example compose.env
+# Edit compose.env with public frontend values.
+docker compose --env-file compose.env up --build -d
+docker compose --env-file compose.env ps
+~~~
+
+Open <http://127.0.0.1:8080/>. Both images run as non-root users; Compose adds read-only root
+filesystems and reduced Linux privileges. Complete configuration, lifecycle, security, and AWS ECS
+instructions: [deployment.md](deployment.md).
+
+## 14. Secret and Git checks
+
+Never commit:
+
+- <code>backend/.env</code>;
+- <code>frontend/config.js</code>;
+- <code>result*.json</code>;
+- Supabase backend keys;
+- Gonka or Brave keys;
+- OAuth client secrets;
+- user access tokens.
+
+Verify ignore rules:
+
+~~~bash
+git check-ignore -v backend/.env frontend/config.js result.json
+git status --short
+~~~
+
+<code>.env.example</code> and <code>config.example.js</code> should remain tracked because they
+contain placeholders only.
+
+## 15. Troubleshooting
+
+### <code>cp: cannot stat '.env.example'</code>
+
+Command ran from repository root. File is in backend:
+
+~~~bash
 cd backend
 cp .env.example .env
-```
+~~~
 
-### `uv: command not found`
+### <code>SUPABASE_URL Input should be a valid URL</code>
 
-Restart terminal after installing uv, run `python -m uv`, or use standard venv/pip path above.
+Use current <code>.env.example</code>. Blank optional Supabase values are normalized to absent.
+When enabling Supabase, provide complete <code>https://...supabase.co</code> URL.
 
-### `422 Unprocessable Content`
+### Health says <code>gonkaConfigured: false</code>
 
-Request JSON or `inputType` is invalid. Use raw URL/text inside JSON; do not paste Markdown links such
-as `[https://example.com](https://example.com)`.
+Add Gonka key to <code>backend/.env</code>, then restart backend.
 
-### `result.json` not found
+### Health says <code>searchConfigured: false</code>
 
-Create it with curl `-o result.json`, then run inspection command from same directory.
+Add Brave Search key to <code>backend/.env</code>, then restart backend. Without it, text claims
+normally become inconclusive because no web evidence is retrieved.
 
-### `status: degraded` with `VERIFIER_FAILED`
+### Health says <code>persistenceBackend: memory</code>
 
-Check backend logs. `ReadTimeout` without HTTP status means provider did not answer before configured
-timeout. App retries once and preserves partial results. A persistent failure requires provider
-recovery or another account-available distinct model.
+Both <code>SUPABASE_URL</code> and <code>SUPABASE_KEY</code> are not configured. Protected routes
+also cannot authenticate in default app until Supabase is configured.
 
-### Health reports configuration `false`
+### <code>401 AUTHENTICATION_REQUIRED</code>
 
-Restart backend after editing `.env`. Confirm `.env` is inside `backend`, not repository root. Do not
-print secret values while diagnosing.
+Bearer token is missing, expired, invalid, or backend Supabase Auth is not configured. Sign in again
+and verify frontend/backend use same Supabase project.
 
-### Reset local environment
+### Google redirects to unreachable <code>localhost</code>
 
-Deactivate environment, remove only `backend/.venv`, then repeat selected setup path. Never remove
-repository root or `.env` unless intentionally recreating local credentials.
+Supabase rejected requested redirect and used Site URL fallback. Make frontend address,
+<code>OAUTH_REDIRECT_URL</code>, Supabase Site URL, Supabase Redirect URLs, and Google origin agree
+exactly.
+
+### Browser reports CORS error
+
+Add exact frontend origin to backend <code>CORS_ALLOWED_ORIGINS</code> and restart backend. Do not
+include path or trailing slash.
+
+### <code>422 Unprocessable Content</code>
+
+Send raw text or URL inside valid JSON. Do not send Markdown link such as
+<code>[https://example.com](https://example.com)</code>.
+
+### <code>status: degraded</code> with <code>VERIFIER_FAILED</code>
+
+Inspect backend logs and response <code>errors</code>. Gonka model may be unavailable, timed out, or
+returned invalid JSON. Backend retries only configured bounded count and preserves partial result.
+
+### <code>result.json</code> not found
+
+Run curl with <code>-o result.json</code>, then inspect file from same directory.
+
+### Request appears slow
+
+Current endpoint is synchronous. Sequential verifiers, provider timeouts, and bounded retries can
+take several minutes. Frontend progress stages are estimates until response returns.
+
+### History misses records
+
+Confirm migrations and RLS are applied, signed-in user owns rows, and frontend uses same Supabase
+project. Frontend paginates all rows in 500-record pages.
+
+### Reset Python environment
+
+Deactivate environment. Remove only <code>backend/.venv</code>, then repeat one environment option.
+Do not remove repository root or local secret files unless intentionally recreating them.
+
+## 16. Next documents
+
+- [System architecture and workflows](architecture.md)
+- [Containers and AWS deployment](deployment.md)
+- [HTTP API contract](api.md)
+- [Backend codebase](../backend/README.md)
+- [Frontend codebase](../frontend/README.md)

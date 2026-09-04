@@ -1,0 +1,9 @@
+config.js
+.env
+.env.*
+README.md
+auth.js
+__pycache__/
+*.log
+.git/
+.gitignore

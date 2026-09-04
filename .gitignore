@@ -8,6 +8,7 @@ secrets/
 *.key
 *.p12
 *.pfx
+*.pem
 credentials.json
 service-account*.json
 
@@ -25,6 +26,7 @@ env/
 # Frontend local public configuration
 frontend/config.js
 !frontend/config.example.js
+compose.env
 
 # Python bytecode and caches
 __pycache__/
