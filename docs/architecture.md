@@ -464,14 +464,26 @@ Controls include:
 ## 15. Deployment shape and constraints
 
 Current container deployment is one rootless Nginx frontend and one non-root FastAPI/Uvicorn
-backend. Local Compose adds health checks, read-only filesystems, bounded temporary storage, dropped
-Linux capabilities, and privilege-escalation protection. Supabase remains external persistent
-storage; containers are disposable.
+backend. Local Compose and AWS EC2 direct-container commands add health checks, read-only
+filesystems, bounded temporary storage, dropped Linux capabilities, and privilege-escalation
+protection. Supabase remains external persistent storage; containers are disposable.
 
-The AWS deployment shape uses separate ECR images and ECS/Fargate services. The backend health path
-is <code>/api/v1/health</code> on port 8000; frontend health is <code>/healthz</code> on port 8080.
-Backend secrets are injected at runtime and frontend public configuration is generated at container
-startup.
+The completed hackathon deployment stores separate images in private ECR and pulls them onto one
+Ubuntu EC2 instance using an ECR pull-only instance role. The backend health path is
+<code>/api/v1/health</code> on port 8000; frontend health is <code>/healthz</code> on port 8080.
+Backend secrets are injected from an EC2-local protected env file and frontend public configuration
+is generated at container startup. See
+[Deployment Part 1](deployment/deployment-part-1.md).
+
+The hackathon public test path adds separate Cloudflare Quick Tunnel containers for the frontend
+and backend. Each tunnel proxies a random HTTPS `trycloudflare.com` origin to its localhost port.
+This removes the need for public EC2 inbound rules on ports 8000 and 8080, but the random origins
+must be kept aligned across frontend runtime configuration, backend CORS, Supabase redirect URLs,
+and Google OAuth settings. Quick Tunnels are temporary and provide no production uptime guarantee.
+See [Deployment Part 2](deployment/deployment-part-2-quick-tunnels.md).
+
+The longer-term AWS alternative separates the images into ECS/Fargate services with HTTPS
+endpoints and managed secret injection.
 
 No queue or background worker exists. Verification latency therefore remains inside one HTTP
 request and can reach several minutes when Gonka retries. A backend Application Load Balancer must

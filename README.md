@@ -61,6 +61,8 @@ docs/       Architecture, workflow, API, and complete setup documentation
 - [System architecture and workflows](docs/architecture.md)
 - [Complete local setup](docs/setup.md)
 - [Containers and AWS deployment](docs/deployment.md)
+- [AWS EC2 deployment journal — Part 1](docs/deployment/deployment-part-1.md)
+- [Public HTTPS Quick Tunnel runbook — Part 2](docs/deployment/deployment-part-2-quick-tunnels.md)
 - [HTTP API contract](docs/api.md)
 - [Backend codebase](backend/README.md)
 - [Frontend codebase](frontend/README.md)

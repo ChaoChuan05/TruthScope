@@ -1,5 +1,11 @@
 # TruthScope container and AWS deployment
 
+The first completed AWS deployment used private ECR plus one EC2 host and direct hardened Docker
+containers. Its reproducible commands and observed failures are recorded in
+[Deployment Part 1](deployment/deployment-part-1.md). The no-domain HTTPS and OAuth continuation is
+recorded in [Deployment Part 2](deployment/deployment-part-2-quick-tunnels.md). This document
+describes local Compose and the longer-term ECS/Fargate deployment alternative.
+
 TruthScope ships as two independent container images:
 
 | Image | Runtime | Port | Health check |
@@ -7,8 +13,9 @@ TruthScope ships as two independent container images:
 | `truthscope-backend` | FastAPI/Uvicorn | 8000 | `/api/v1/health` |
 | `truthscope-frontend` | Nginx static site | 8080 | `/healthz` |
 
-The local Compose stack is the fastest way to validate both images. For AWS, deploy each image as
-its own ECS service so the frontend and backend can scale and restart independently.
+The local Compose stack is the fastest way to validate both images. For a longer-lived AWS target,
+each image can become its own ECS service so the frontend and backend scale and restart
+independently.
 
 ## 1. Container files
 
