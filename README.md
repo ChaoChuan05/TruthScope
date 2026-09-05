@@ -239,8 +239,6 @@ are documented under [Documentation](#documentation).
 - [Public HTTPS Quick Tunnel runbook — Part 2](docs/deployment/deployment-part-2-quick-tunnels.md)
 - [Backend codebase](backend/README.md)
 - [Frontend codebase](frontend/README.md)
-- [Challenges](challenges.md)
-- [Gonka Router partner track](gonkarouter.md)
 
 ## Responsible-Use Notice
 
