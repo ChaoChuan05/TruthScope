@@ -16,6 +16,9 @@ Running backend publishes:
 Generated OpenAPI is authoritative for field-level validation. This document explains usage and
 semantics.
 
+Relevant success codes are <code>200 OK</code> for reads, <code>201 Created</code> for the
+synchronous verification endpoint, and <code>202 Accepted</code> when a background job is created.
+
 ## Authentication
 
 Every verification and topic-suggestion route requires a Supabase user access token:
@@ -160,8 +163,9 @@ This backward-compatible endpoint runs the complete LangGraph workflow and persi
 before returning. Provider retries can take several minutes. Browser clients should use the job
 endpoints above.
 
-Frontend progress must be labelled estimated until final response arrives. Final
-<code>inferenceRecords</code> provide confirmed task, model, latency, and request metadata.
+Job polling exposes job state rather than individual LangGraph node events, so frontend stage
+progress must remain labelled estimated. Final <code>inferenceRecords</code> provide confirmed task,
+model, latency, and request metadata.
 
 ### Response
 
@@ -393,8 +397,9 @@ query, Supabase Auth request, or database write.
 
 | HTTP | Typical meaning |
 |---:|---|
-| 201 | Verification result produced; inspect body status |
 | 200 | Health, full result, or evidence returned |
+| 201 | Synchronous verification result produced; inspect body status |
+| 202 | Verification job accepted; poll the returned job ID |
 | 401 | Bearer token missing, invalid, expired, or Supabase Auth unavailable |
 | 403 | Authenticated user does not own record |
 | 404 | Verification ID not found |
@@ -412,11 +417,38 @@ CORS_ALLOWED_ORIGINS=http://127.0.0.1:5500,http://localhost:5500
 Origins cannot contain paths, credentials, queries, fragments, or wildcards. Allowed methods are
 GET, POST, and OPTIONS. Bearer authorization is sent as header; CORS credentials mode is disabled.
 
-## curl example
+## curl examples
+
+### Recommended asynchronous job
 
 ~~~bash
 export TRUTHSCOPE_ACCESS_TOKEN='your-supabase-user-access-token'
 
+curl -sS \
+  -o job.json \
+  -w 'HTTP %{http_code}\n' \
+  -X POST http://127.0.0.1:8000/api/v1/verification-jobs \
+  -H "Authorization: Bearer $TRUTHSCOPE_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "input": "Malaysia reported a population of 34.1 million in 2024.",
+    "inputType": "text",
+    "outputLanguage": "en"
+  }'
+
+export JOB_ID="$(python3 -c 'import json; print(json.load(open("job.json"))["jobId"])')"
+
+curl -sS \
+  -H "Authorization: Bearer $TRUTHSCOPE_ACCESS_TOKEN" \
+  "http://127.0.0.1:8000/api/v1/verification-jobs/$JOB_ID"
+~~~
+
+Repeat the final <code>GET</code> until status is <code>complete</code> or <code>failed</code>. A
+<code>complete</code> job carries the full verification document under <code>result</code>.
+
+### Synchronous compatibility request
+
+~~~bash
 curl -sS --max-time 360 \
   -o result.json \
   -w 'HTTP %{http_code}\n' \

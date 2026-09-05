@@ -8,6 +8,7 @@ const oauthRedirectSetting = String(appConfig.OAUTH_REDIRECT_URL || "").trim();
 const supabaseUrl = String(appConfig.SUPABASE_URL || "").replace(/\/$/, "");
 const supabasePublishableKey = String(appConfig.SUPABASE_PUBLISHABLE_KEY || "");
 const i18n = window.TRUTHSCOPE_I18N || {};
+const termsBundle = window.TRUTHSCOPE_TERMS || {};
 const supportedLanguages = new Set(["en", "ms", "zh-CN"]);
 
 const input = document.getElementById("claimInput");
@@ -33,6 +34,7 @@ const promptLoginButton = document.getElementById("promptLoginBtn");
 const loginModal = document.getElementById("loginModal");
 const closeLoginButton = document.getElementById("closeLoginBtn");
 const googleLoginButton = document.getElementById("googleLoginBtn");
+const githubLoginButton = document.getElementById("githubLoginBtn");
 const logoutButton = document.getElementById("logoutBtn");
 const userPanel = document.getElementById("userPanel");
 const userAvatar = document.getElementById("userAvatar");
@@ -45,7 +47,6 @@ const historyRefresh = document.getElementById("historyRefresh");
 const historyCount = document.getElementById("historyCount");
 const historySearch = document.getElementById("historySearch");
 const historyVerdictFilter = document.getElementById("historyVerdictFilter");
-const historyLoadMore = document.getElementById("historyLoadMore");
 const clearInputButton = document.getElementById("clearInputBtn");
 const inputTypeBadge = document.getElementById("inputTypeBadge");
 const stopWaitingButton = document.getElementById("stopWaitingBtn");
@@ -55,11 +56,23 @@ const trendingTopics = document.getElementById("trendingTopics");
 const trendingTopicsLabel = document.getElementById("topicSuggestionsLabel");
 const trendingTopicsStatus = document.getElementById("trendingTopicsStatus");
 const languageSelect = document.getElementById("languageSelect");
+const termsLink = document.getElementById("termsLink");
+const termsModal = document.getElementById("termsModal");
+const termsGateTitle = document.getElementById("termsGateTitle");
+const termsEffectiveDate = document.getElementById("termsEffectiveDate");
+const termsLanguageSelect = document.getElementById("termsLanguageSelect");
+const termsScroll = document.getElementById("termsScroll");
+const termsReadStatus = document.getElementById("termsReadStatus");
+const termsAcceptance = document.getElementById("termsAcceptance");
+const termsAcceptanceLabel = document.getElementById("termsAcceptanceLabel");
+const declineTermsButton = document.getElementById("declineTermsBtn");
+const acceptTermsButton = document.getElementById("acceptTermsBtn");
 
 const HISTORY_PAGE_SIZE = 500;
-const HISTORY_RENDER_BATCH_SIZE = 25;
 const TRENDING_TOPICS_CACHE_PREFIX = "truthscope-current-topics-v1:";
 const PENDING_VERIFICATION_CACHE_PREFIX = "truthscope-pending-verification-v1:";
+const TERMS_ACCEPTANCE_CACHE_PREFIX = "truthscope-terms-acceptance-v1:";
+const TERMS_VERSION = String(termsBundle.version || "2026-09-05-2");
 const VERIFICATION_JOB_POLL_INTERVAL_MS = 2500;
 
 const verdictTranslationKeys = {
@@ -154,7 +167,6 @@ let scoreAnimationFrame = null;
 let historyUserId = null;
 let historyLoadGeneration = 0;
 let historyRows = [];
-let historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
 let activeHistoryId = null;
 let activeVerificationController = null;
 let pendingVerificationUserId = null;
@@ -164,6 +176,9 @@ let selectedLanguage = "en";
 let lastRenderedResult = null;
 let currentTrendingTopics = [];
 let currentTrendingSource = "fallback";
+let activeTermsUserId = null;
+let termsReadToEnd = false;
+const acceptedTermsSessionUsers = new Set();
 
 function t(key, replacements = {}) {
   const languageMessages = i18n.messages?.[selectedLanguage] || i18n.messages?.en || {};
@@ -194,6 +209,8 @@ function applyLanguage(language, { persist = true } = {}) {
   document.documentElement.lang = languageDefinition.htmlLang || selectedLanguage;
   document.title = t("documentTitle");
   languageSelect.value = selectedLanguage;
+  termsLanguageSelect.value = selectedLanguage;
+  termsLink.href = `terms.html?lang=${encodeURIComponent(selectedLanguage)}`;
 
   document.querySelectorAll("[data-i18n]").forEach((element) => {
     element.textContent = t(element.dataset.i18n);
@@ -231,6 +248,10 @@ function applyLanguage(language, { persist = true } = {}) {
     }
   }
   if (activeVerificationController) checkLabel.textContent = t("analyzing");
+  if (!currentSession?.user?.id || !hasAcceptedCurrentTerms(currentSession.user.id)) {
+    clearUserProfileUi();
+  }
+  if (!termsModal.hidden) renderTermsGate({ resetReading: true });
 }
 
 function initializeLanguage() {
@@ -671,6 +692,105 @@ function configuredForAuth() {
   );
 }
 
+function termsDocumentForLanguage() {
+  return termsBundle.documents?.[selectedLanguage] || termsBundle.documents?.en || null;
+}
+
+function termsAcceptanceKey(userId) {
+  return `${TERMS_ACCEPTANCE_CACHE_PREFIX}${userId}`;
+}
+
+function hasAcceptedCurrentTerms(userId) {
+  if (!userId) return false;
+  if (acceptedTermsSessionUsers.has(userId)) return true;
+  try {
+    const storedAcceptance = JSON.parse(localStorage.getItem(termsAcceptanceKey(userId)) || "null");
+    return storedAcceptance?.version === TERMS_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+function storeTermsAcceptance(userId) {
+  acceptedTermsSessionUsers.add(userId);
+  try {
+    localStorage.setItem(
+      termsAcceptanceKey(userId),
+      JSON.stringify({
+        version: TERMS_VERSION,
+        acceptedAt: new Date().toISOString(),
+        language: selectedLanguage,
+      }),
+    );
+  } catch {
+    // Current session can continue; blocked storage causes another prompt after reload.
+  }
+}
+
+function updateTermsReadState() {
+  const documentContent = termsDocumentForLanguage();
+  if (!documentContent) return;
+  const reachedEnd =
+    termsScroll.scrollHeight - termsScroll.scrollTop <= termsScroll.clientHeight + 6;
+  if (reachedEnd) termsReadToEnd = true;
+  termsAcceptance.disabled = !termsReadToEnd;
+  termsReadStatus.textContent = termsReadToEnd
+    ? documentContent.readComplete
+    : documentContent.scrollPrompt;
+  acceptTermsButton.disabled = !(termsReadToEnd && termsAcceptance.checked);
+}
+
+function renderTermsGate({ resetReading = false } = {}) {
+  const documentContent = termsDocumentForLanguage();
+  if (!documentContent) return;
+
+  termsGateTitle.textContent = documentContent.title;
+  termsEffectiveDate.textContent = documentContent.effectiveDate;
+  termsLanguageSelect.value = selectedLanguage;
+  termsLanguageSelect.setAttribute("aria-label", documentContent.languageLabel);
+  termsAcceptanceLabel.textContent = documentContent.acceptance;
+  acceptTermsButton.textContent = documentContent.acceptButton;
+  declineTermsButton.textContent = documentContent.declineButton;
+
+  const fragment = document.createDocumentFragment();
+  fragment.append(createElement("p", "terms-introduction", documentContent.introduction));
+  documentContent.sections.forEach((section) => {
+    const sectionElement = createElement("section", "terms-section");
+    sectionElement.append(createElement("h3", "", section.title));
+    section.paragraphs.forEach((paragraph) => {
+      sectionElement.append(createElement("p", "", paragraph));
+    });
+    fragment.append(sectionElement);
+  });
+  termsScroll.replaceChildren(fragment);
+
+  if (resetReading) {
+    termsReadToEnd = false;
+    termsAcceptance.checked = false;
+    termsScroll.scrollTop = 0;
+  }
+  requestAnimationFrame(updateTermsReadState);
+}
+
+function openTermsGate(userId) {
+  const sameOpenGate = activeTermsUserId === userId && !termsModal.hidden;
+  activeTermsUserId = userId;
+  termsModal.hidden = false;
+  document.body.classList.add("auth-modal-open");
+  if (!sameOpenGate) renderTermsGate({ resetReading: true });
+  requestAnimationFrame(() => termsScroll.focus());
+}
+
+function closeTermsGate() {
+  termsModal.hidden = true;
+  activeTermsUserId = null;
+  termsReadToEnd = false;
+  termsAcceptance.checked = false;
+  termsAcceptance.disabled = true;
+  acceptTermsButton.disabled = true;
+  if (loginModal.hidden) document.body.classList.remove("auth-modal-open");
+}
+
 function openLogin(message = "") {
   previousModalFocus = document.activeElement;
   authMessage.textContent = message;
@@ -681,7 +801,7 @@ function openLogin(message = "") {
 
 function closeLogin() {
   loginModal.hidden = true;
-  document.body.classList.remove("auth-modal-open");
+  if (termsModal.hidden) document.body.classList.remove("auth-modal-open");
   if (previousModalFocus instanceof HTMLElement) previousModalFocus.focus();
 }
 
@@ -701,13 +821,18 @@ function clearPrivateUi() {
   replaceChildren(claimBreakdown);
   replaceChildren(historyList);
   historyRows = [];
-  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
   activeHistoryId = null;
   lastRenderedResult = null;
-  historyLoadMore.hidden = true;
   historyCount.textContent = t("records", { count: 0 });
   setVerificationMessage("");
   updateInputUi();
+}
+
+function clearUserProfileUi() {
+  userDisplayName.textContent = t("account");
+  userAvatar.hidden = true;
+  userAvatar.alt = "";
+  userAvatar.removeAttribute("src");
 }
 
 async function loadUserProfile(user) {
@@ -737,14 +862,17 @@ async function loadUserProfile(user) {
 function updateAuthUi(session) {
   currentSession = session || null;
   const signedIn = Boolean(currentSession?.user?.id);
+  const termsAccepted = signedIn && hasAcceptedCurrentTerms(currentSession.user.id);
   document.querySelectorAll(".auth-only").forEach((element) => {
-    element.hidden = !signedIn;
+    element.hidden = !termsAccepted;
   });
   signedOutPrompt.hidden = signedIn;
   openLoginButton.hidden = signedIn;
   userPanel.hidden = !signedIn;
 
   if (!signedIn) {
+    closeTermsGate();
+    clearUserProfileUi();
     historyUserId = null;
     trendingTopicsUserId = null;
     trendingTopicsLoadGeneration += 1;
@@ -753,6 +881,18 @@ function updateAuthUi(session) {
     return;
   }
 
+  closeLogin();
+  if (!termsAccepted) {
+    clearUserProfileUi();
+    historyUserId = null;
+    trendingTopicsUserId = null;
+    trendingTopicsLoadGeneration += 1;
+    clearPrivateUi();
+    openTermsGate(currentSession.user.id);
+    return;
+  }
+
+  closeTermsGate();
   void loadUserProfile(currentSession.user);
   if (trendingTopicsUserId !== currentSession.user.id) {
     trendingTopicsUserId = currentSession.user.id;
@@ -763,7 +903,6 @@ function updateAuthUi(session) {
     void loadHistory();
   }
   void resumePendingVerification(currentSession.user.id);
-  closeLogin();
 }
 
 async function getSession() {
@@ -1354,11 +1493,10 @@ function filteredHistoryRows() {
 
 function renderHistoryRows() {
   const filteredRows = filteredHistoryRows();
-  const visibleRows = filteredRows.slice(0, historyVisibleCount);
+  const visibleRows = filteredRows;
   historyCount.textContent = filteredRows.length === historyRows.length
     ? t("records", { count: historyRows.length })
     : t("filteredRecords", { shown: filteredRows.length, total: historyRows.length });
-  historyLoadMore.hidden = visibleRows.length >= filteredRows.length;
   if (!filteredRows.length) {
     const message = historyRows.length
       ? t("noHistoryMatch")
@@ -1435,7 +1573,6 @@ async function loadHistory() {
   historyRefresh.disabled = true;
   historySearch.disabled = true;
   historyVerdictFilter.disabled = true;
-  historyLoadMore.hidden = true;
   replaceChildren(historyList, [createElement("div", "empty-state", t("loadingHistory"))]);
   historyCount.textContent = t("loadingHistory");
   const expectedUserId = currentSession.user.id;
@@ -1473,7 +1610,6 @@ async function loadHistory() {
     return;
   }
   historyRows = rows;
-  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
   renderHistoryRows();
 }
 
@@ -1590,6 +1726,28 @@ async function initializeAuth() {
   updateAuthUi(data.session);
 }
 
+async function beginOAuth(provider) {
+  if (!supabaseClient) {
+    authMessage.textContent = t("authMissing");
+    return;
+  }
+  const isGithub = provider === "github";
+  googleLoginButton.disabled = true;
+  githubLoginButton.disabled = true;
+  authMessage.textContent = t(isGithub ? "redirectingGithub" : "redirectingGoogle");
+  try {
+    const { error } = await supabaseClient.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: oauthRedirectUrl() },
+    });
+    if (error) throw error;
+  } catch (error) {
+    authMessage.textContent = error.message || t(isGithub ? "githubLoginFailed" : "googleLoginFailed");
+    googleLoginButton.disabled = false;
+    githubLoginButton.disabled = false;
+  }
+}
+
 input.addEventListener("input", updateInputUi);
 input.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void runCheck();
@@ -1606,15 +1764,9 @@ stopWaitingButton.addEventListener("click", () => {
 });
 historyRefresh.addEventListener("click", () => void loadHistory());
 historySearch.addEventListener("input", () => {
-  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
   renderHistoryRows();
 });
 historyVerdictFilter.addEventListener("change", () => {
-  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
-  renderHistoryRows();
-});
-historyLoadMore.addEventListener("click", () => {
-  historyVisibleCount += HISTORY_RENDER_BATCH_SIZE;
   renderHistoryRows();
 });
 promptLoginButton.addEventListener("click", () => openLogin());
@@ -1643,24 +1795,47 @@ loginModal.addEventListener("keydown", (event) => {
   }
 });
 
-googleLoginButton.addEventListener("click", async () => {
-  if (!supabaseClient) {
-    authMessage.textContent = t("authMissing");
+termsLanguageSelect.addEventListener("change", () => {
+  applyLanguage(termsLanguageSelect.value);
+});
+termsScroll.addEventListener("scroll", updateTermsReadState);
+termsAcceptance.addEventListener("change", updateTermsReadState);
+termsModal.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
     return;
   }
-  googleLoginButton.disabled = true;
-  authMessage.textContent = t("redirectingGoogle");
-  try {
-    const { error } = await supabaseClient.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: oauthRedirectUrl() },
-    });
-    if (error) throw error;
-  } catch (error) {
-    authMessage.textContent = error.message || t("googleLoginFailed");
-    googleLoginButton.disabled = false;
+  if (event.key !== "Tab") return;
+  const focusable = [
+    ...termsModal.querySelectorAll("button, select, input:not([disabled]), [tabindex='0']"),
+  ].filter((element) => !element.disabled && !element.hidden);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 });
+
+acceptTermsButton.addEventListener("click", () => {
+  if (!activeTermsUserId || !termsReadToEnd || !termsAcceptance.checked) return;
+  storeTermsAcceptance(activeTermsUserId);
+  updateAuthUi(currentSession);
+});
+
+declineTermsButton.addEventListener("click", async () => {
+  if (!supabaseClient) return;
+  declineTermsButton.disabled = true;
+  const { error } = await supabaseClient.auth.signOut({ scope: "local" });
+  declineTermsButton.disabled = false;
+  if (error) termsReadStatus.textContent = error.message || t("signOutFailed");
+});
+
+googleLoginButton.addEventListener("click", () => void beginOAuth("google"));
+githubLoginButton.addEventListener("click", () => void beginOAuth("github"));
 
 logoutButton.addEventListener("click", async () => {
   logoutButton.disabled = true;

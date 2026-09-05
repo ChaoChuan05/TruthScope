@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -71,6 +72,43 @@ async def test_supabaseRestGateway_convertsSaveFailure() -> None:
             match="could not save",
         ):
             await gateway.saveVerification(buildPayload())
+
+
+async def test_supabaseRestGateway_logsSafeConflictMetadata(caplog) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            409,
+            json={
+                "code": "23505",
+                "message": (
+                    "duplicate key value violates unique constraint "
+                    '"model_inferences_run_id_external_claim_id_model_name_key"'
+                ),
+                "details": "Sensitive row details must not be logged.",
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://example.supabase.co",
+        transport=httpx.MockTransport(handler),
+    ) as httpClient:
+        gateway = SupabaseRestGateway(
+            baseUrl="https://example.supabase.co",
+            apiKey="test-secret-key",
+            httpClient=httpClient,
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="app.integrations.supabase.gateway"),
+            pytest.raises(PersistenceUnavailableError),
+        ):
+            await gateway.saveVerification(buildPayload())
+
+    assert "statusCode=409" in caplog.text
+    assert "databaseCode=23505" in caplog.text
+    assert "model_inferences_run_id_external_claim_id_model_name_key" in caplog.text
+    assert "Sensitive row details" not in caplog.text
 
 
 async def test_supabaseRestGateway_getsVerification() -> None:

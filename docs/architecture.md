@@ -25,7 +25,7 @@ correctness. It helps users inspect evidence and limitations.
 flowchart LR
     User[Authenticated user]
     Browser[Static frontend]
-    Google[Google OAuth]
+    Providers[Google / GitHub OAuth]
     Auth[Supabase Auth]
     Database[(Supabase Postgres)]
     API[FastAPI backend]
@@ -35,8 +35,8 @@ flowchart LR
     Web[Public web pages]
 
     User --> Browser
-    Browser --> Google
-    Google --> Auth
+    Browser --> Providers
+    Providers --> Auth
     Auth --> Browser
     Browser -->|Bearer token + claim| API
     Browser -->|RLS-protected profile and history summaries| Database
@@ -53,14 +53,15 @@ flowchart LR
 
 | Unit | Responsibility |
 |---|---|
-| Static frontend | OAuth, API calls, estimated progress, results, history |
+| Static frontend | OAuth, job submission/polling, estimated progress, results, history |
 | FastAPI | HTTP validation, authentication dependency, CORS, service lifecycle, public errors |
 | VerificationService | IDs, initial state, graph execution, persistence |
+| VerificationJobService | Process-local job ownership, background execution, polling snapshots |
 | LangGraph | Typed stages, routing, partial-state accumulation, bounded neutrality retry |
 | Gonka adapter | Anthropic-compatible Messages API, task policies, request metadata |
 | Retrieval adapters | Brave candidate/news search, public-page fetching, evidence conversion |
 | Scoring service | Pure evidence and confidence calculation |
-| Supabase Auth | Google session and backend token validation |
+| Supabase Auth | Google/GitHub sessions and backend token validation |
 | Supabase Postgres | Profiles, user-owned history, normalized records, full result document |
 
 ## 3. Repository ownership
@@ -116,17 +117,19 @@ Rules:
 sequenceDiagram
     actor User
     participant UI as Frontend
-    participant Google
+    participant Provider as Google or GitHub
     participant SA as Supabase Auth
     participant API as FastAPI
     participant DB as Supabase
 
-    User->>UI: Select Continue with Google
-    UI->>SA: signInWithOAuth(google, redirectTo)
-    SA->>Google: OAuth authorization
-    Google-->>SA: Provider callback
+    User->>UI: Select Google or GitHub
+    UI->>SA: signInWithOAuth(provider, redirectTo)
+    SA->>Provider: OAuth authorization
+    Provider-->>SA: Provider callback
     SA-->>UI: Redirect with Supabase session
     UI->>SA: Read or refresh session
+    UI->>UI: Require current Terms acceptance
+    User->>UI: Scroll, confirm, and accept or sign out
     UI->>API: Request with Bearer access token
     API->>SA: GET /auth/v1/user
     SA-->>API: Trusted user ID
@@ -138,6 +141,8 @@ sequenceDiagram
 
 Frontend visibility controls are UX, not authorization. Backend independently validates token.
 Supabase RLS independently restricts browser-readable rows.
+Terms acceptance is versioned per user in browser local storage. It gates frontend features but is
+not a cross-device, server-enforced compliance record.
 
 Default application requires both <code>SUPABASE_URL</code> and <code>SUPABASE_KEY</code> to create
 Supabase Auth client. Without them, health and automated fake-boundary tests work, but protected
@@ -248,6 +253,8 @@ existing raw result document. Older stored results parse as English.
 Frontend translates static labels locally from <code>frontend/i18n.js</code> and stores selection in
 <code>localStorage</code>. Selector updates UI immediately. New verification is required to generate
 report prose in another language, ensuring consensus and bias audit inspect same language user sees.
+Versioned Terms content lives in <code>frontend/terms.js</code> and uses the same English, Bahasa
+Melayu, and Simplified Chinese selection.
 
 <code>VerificationGraphState</code> is a TypedDict containing:
 
@@ -462,24 +469,29 @@ summary status <code>completed</code>; exact API state remains in <code>provider
 Frontend history:
 
 - queries user-owned <code>verification_runs</code> summaries under RLS;
-- paginates in 500-row batches until all rows are loaded;
+- paginates API reads in 500-row batches, then renders all loaded rows;
 - fetches current full result through protected backend GET; and
 - uses direct <code>raw_result</code> only for legacy rows without external verification ID.
+
+Normalized model-inference rows use Gonka request identity, not served model name, for uniqueness.
+Verifier A and B request distinct models, but provider routing can serve the same model for both;
+both independently traceable analyses must remain persistable.
 
 In-memory repository supports tests and injected development services. Data disappears after
 process restart. Default protected HTTP routes still require configured Supabase Auth.
 
 ## 12. Frontend request workflow
 
-1. Supabase session enables Verify and History controls.
-2. User submits up to 800 characters through browser form.
-3. Frontend starts <code>POST /verification-jobs</code> with Bearer token.
-4. Backend returns an opaque job ID and continues work in a background task.
-5. Frontend stores job ID/start time under the user ID and polls the protected job route.
-6. Refresh restores elapsed tracking and polling from local storage.
-7. UI displays time-based estimated stages because polling exposes job state, not node events.
-8. Completed job returns <code>VerificationResult</code>; UI replaces estimates with confirmed records.
-9. UI renders result and reloads History.
+1. Frontend obtains a Supabase session.
+2. Current Terms version must be read and accepted before Verify and History controls appear.
+3. User submits up to 800 characters through browser form.
+4. Frontend starts <code>POST /verification-jobs</code> with Bearer token.
+5. Backend returns an opaque job ID and continues work in a background task.
+6. Frontend stores job ID/start time under the user ID and polls the protected job route.
+7. Refresh restores elapsed tracking and polling from local storage.
+8. UI displays time-based estimated stages because polling exposes job state, not node events.
+9. Completed job returns <code>VerificationResult</code>; UI replaces estimates with confirmed records.
+10. UI renders result and reloads History.
 
 The process-local registry is sufficient for the one-worker hackathon deployment. It survives
 browser refresh, not backend restart, and is not shared between workers. Durable production jobs
@@ -556,22 +568,32 @@ The hackathon public test path adds separate Cloudflare Quick Tunnel containers 
 and backend. Each tunnel proxies a random HTTPS `trycloudflare.com` origin to its localhost port.
 This removes the need for public EC2 inbound rules on ports 8000 and 8080, but the random origins
 must be kept aligned across frontend runtime configuration, backend CORS, Supabase redirect URLs,
-and Google OAuth settings. Quick Tunnels are temporary and provide no production uptime guarantee.
+and Google/GitHub OAuth settings. Quick Tunnels are temporary and provide no production uptime guarantee.
 See [Deployment Part 2](deployment/deployment-part-2-quick-tunnels.md).
 
 The longer-term AWS alternative separates the images into ECS/Fargate services with HTTPS
-endpoints and managed secret injection.
+endpoints and managed secret injection. It must keep exactly one backend task until job state is
+moved to a durable shared store.
 
-No queue or background worker exists. Verification latency therefore remains inside one HTTP
-request and can reach several minutes when Gonka retries. A backend Application Load Balancer must
-use an idle timeout longer than the maximum verification request duration.
+The browser creates a job through <code>POST /verification-jobs</code>, receives
+<code>202 Accepted</code>, and polls <code>GET /verification-jobs/{jobId}</code>. An in-process
+<code>asyncio</code> task runs the existing verification service after the submission request
+returns. This survives browser refresh and HTTP disconnection, but it is not a durable queue or a
+separate worker system. A backend restart loses active job state, and multiple workers cannot see
+one another's jobs. The current deployment therefore uses one Uvicorn worker and one backend
+container.
+
+The synchronous <code>POST /verifications</code> endpoint remains available for scripts and can
+hold one HTTP request for several minutes. A load balancer only needs an extended idle timeout when
+that compatibility endpoint is exposed to long-running clients.
 
 Sequential verifiers are default because constrained Gonka routes may time out concurrent calls.
 Parallel mode can reduce latency only after account capacity testing.
 
-Future real-time progress requires a backend job resource plus polling, server-sent events, or
-WebSocket transport. Current frontend intentionally labels progress estimates instead of claiming
-live agent telemetry.
+Polling exposes job-level <code>queued</code>, <code>running</code>, <code>complete</code>, and
+<code>failed</code> states, not live node events. The frontend therefore labels its stage timeline
+as estimated. True per-node progress would require explicit graph telemetry plus polling fields,
+server-sent events, or WebSocket transport.
 
 ## 16. Architecture change checklist
 

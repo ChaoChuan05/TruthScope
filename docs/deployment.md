@@ -1,7 +1,8 @@
 # TruthScope container and AWS deployment
 
-The first completed AWS deployment used private ECR plus one EC2 host and direct hardened Docker
-containers. Its reproducible commands and observed failures are recorded in
+The validated AWS hackathon deployment uses private ECR, one EC2 host, direct hardened Docker
+containers, and two outbound Cloudflare Quick Tunnels. Its reproducible commands and observed
+failures are recorded in
 [Deployment Part 1](deployment/deployment-part-1.md). The no-domain HTTPS and OAuth continuation is
 recorded in [Deployment Part 2](deployment/deployment-part-2-quick-tunnels.md). This document
 describes local Compose and the longer-term ECS/Fargate deployment alternative.
@@ -14,8 +15,8 @@ TruthScope ships as two independent container images:
 | `truthscope-frontend` | Nginx static site | 8080 | `/healthz` |
 
 The local Compose stack is the fastest way to validate both images. For a longer-lived AWS target,
-each image can become its own ECS service so the frontend and backend scale and restart
-independently.
+each image can become its own ECS service after verification jobs are moved out of process so the
+backend can scale and restart safely.
 
 ## 1. Container files
 
@@ -73,7 +74,8 @@ curl -sS http://127.0.0.1:8080/healthz
 ~~~
 
 Open <http://127.0.0.1:8080/>. For OAuth, add that exact URL to Supabase Site URL and Redirect
-URLs. Google still redirects to the Supabase callback URL described in [setup.md](setup.md).
+URLs. Google and GitHub still redirect to the Supabase callback URL described in
+[setup.md](setup.md).
 
 Useful lifecycle commands:
 
@@ -145,19 +147,22 @@ Run exactly one backend worker/task while jobs remain process-local. Multiple re
 poll to a process that does not own the job. A shared durable job store/queue is required before
 horizontal scaling.
 
-This is a prototype accommodation. A production design should submit a job, return `202 Accepted`,
-and expose polling or server-sent progress instead of keeping one HTTP connection open.
+The current prototype already submits a job, returns `202 Accepted`, and polls job state. A
+production design must move the process-local registry and background tasks to durable shared
+infrastructure before enabling multiple backend replicas. Per-node live progress would additionally
+require explicit graph telemetry.
 
 ## 5. Push both images to Amazon ECR
 
-Install and configure AWS CLI first. Choose the account and region deliberately. AWS identifies
-`ap-southeast-5` as Asia Pacific (Malaysia), and ECS on Fargate supports Linux containers there.
-This Region requires account opt-in, so enable it first or use the team's existing selected Region.
+Install and configure AWS CLI first. Choose the account and Region deliberately. The validated EC2
+deployment uses <code>us-east-1</code>; its Availability Zone <code>us-east-1c</code> is not a valid
+CLI Region value. A team may choose another enabled Region, but every ECR, ECS, and registry value
+must then use that same Region.
 See the official [AWS Region table](https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html)
 and [Fargate Region support](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate-Regions.html).
 
 ~~~bash
-export AWS_REGION=ap-southeast-5
+export AWS_REGION=us-east-1
 export AWS_ACCOUNT_ID=123456789012
 export ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -175,15 +180,25 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-docker build -t "$ECR_REGISTRY/truthscope-backend:$IMAGE_TAG" backend
-docker build -t "$ECR_REGISTRY/truthscope-frontend:$IMAGE_TAG" frontend
+docker build --pull --no-cache -t truthscope-backend:local backend
+docker build --pull --no-cache -t truthscope-frontend:local frontend
+
+docker tag truthscope-backend:local \
+  "$ECR_REGISTRY/truthscope-backend:$IMAGE_TAG"
+docker tag truthscope-frontend:local \
+  "$ECR_REGISTRY/truthscope-frontend:$IMAGE_TAG"
 
 docker push "$ECR_REGISTRY/truthscope-backend:$IMAGE_TAG"
 docker push "$ECR_REGISTRY/truthscope-frontend:$IMAGE_TAG"
 ~~~
 
-Use immutable Git-derived tags for deployments instead of relying on `latest`. The login, tag, and
-push sequence follows the official [Amazon ECR image push guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/docker-push-ecr-image.html).
+Build before tagging: assigning a new remote tag to an old local image deploys old code under a new
+name. Inspect the built images before pushing, and use immutable release tags instead of
+<code>latest</code>. When rebuilding a corrected image from the same commit, use a new suffix such as
+<code>abc1234-r2</code> rather than silently replacing the first artifact. The complete guarded
+release procedure is in [Deployment Part 1](deployment/deployment-part-1.md#12-deploy-a-later-image).
+The login, tag, and push sequence follows the official
+[Amazon ECR image push guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/docker-push-ecr-image.html).
 
 ## 6. Create the backend ECS service
 
@@ -193,7 +208,7 @@ Configure the backend container:
 - container port: `8000`;
 - target-group health path: `/api/v1/health`;
 - initial task size: 1 vCPU and 2 GB memory, then tune from observed utilization;
-- desired count: one for a demo, two or more for availability;
+- desired count: exactly one while verification jobs remain process-local;
 - public environment: `APP_ENV=production`, `LOG_LEVEL=INFO`, exact
   `CORS_ALLOWED_ORIGINS`, model IDs, and non-secret timeout settings;
 - secret environment: `GONKA_API_KEY`, `BRAVE_SEARCH_API_KEY`, and `SUPABASE_KEY`; and
@@ -220,7 +235,7 @@ Deploy the backend first and copy its public HTTPS origin. Then configure the fr
 - `SUPABASE_PUBLISHABLE_KEY=<public publishable or anon key>`.
 
 These frontend values are intentionally public: browsers receive them in `config.js`. Never add
-`SUPABASE_KEY`, `service_role`, Gonka, Brave, or Google client secrets to the frontend service.
+`SUPABASE_KEY`, `service_role`, Gonka, Brave, Google, or GitHub client secrets to frontend service.
 
 ## 8. Align public URLs
 
@@ -233,6 +248,8 @@ Before the first login, make these values agree exactly:
 | Supabase additional Redirect URL | `https://app.example.com/` |
 | Google authorized JavaScript origin | `https://app.example.com` |
 | Google authorized redirect URI | `https://PROJECT.supabase.co/auth/v1/callback` |
+| GitHub OAuth App homepage | `https://app.example.com/` |
+| GitHub authorization callback URL | `https://PROJECT.supabase.co/auth/v1/callback` |
 | Backend `CORS_ALLOWED_ORIGINS` | `https://app.example.com` |
 | Frontend `API_BASE_URL` | `https://api.example.com/api/v1` |
 
@@ -251,19 +268,21 @@ curl -sS https://app.example.com/config.js
 Then complete this browser smoke test:
 
 1. Load the frontend over HTTPS and confirm there are no browser-console errors.
-2. Sign in with Google and return to the frontend origin.
-3. Submit one known text claim and wait for a final result.
-4. Confirm two verifier analyses, judge, bias audit, evidence links, and inference metadata.
-5. Open History and reload the saved result.
-6. Inspect CloudWatch Logs without printing tokens or secret environment values.
+2. Sign in with Google and GitHub separately; confirm both return to frontend origin.
+3. Submit one known text claim, switch UI language while it runs, and confirm controls respond.
+4. Refresh during the run and confirm polling resumes for the same job.
+5. Confirm two verifier analyses, judge, bias audit, evidence links, and inference metadata.
+6. Open History and reload the saved result.
+7. Inspect CloudWatch Logs without printing tokens or secret environment values.
 
 ## 10. Operational cautions
 
 - Supabase remains the persistent data layer; ECS tasks are disposable.
 - Changing an injected ECS secret does not update running tasks automatically. Force a new service
   deployment after rotation, as described in the AWS Secrets Manager/ECS documentation.
-- Keep backend desired count at one until concurrent Gonka capacity is tested; scale based on
-  provider limits as well as CPU.
+- Keep backend desired count and Uvicorn worker count at one while jobs remain process-local.
+  Introduce a durable shared job store/queue before horizontal scaling, then test Gonka capacity
+  and scale against provider limits as well as CPU.
 - Restrict backend ALB inbound traffic to HTTPS and do not expose Uvicorn's port directly.
 - Set an AWS Budget and billing alerts before leaving demo resources running.
 - Delete unused ECS services, load balancers, NAT gateways, ECR images, and log retention after the

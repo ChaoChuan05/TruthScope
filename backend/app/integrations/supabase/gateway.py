@@ -1,8 +1,40 @@
+import logging
+import re
+from collections.abc import Mapping
+
 import httpx
 from pydantic import ValidationError
 
 from app.core.exceptions import PersistenceUnavailableError
 from app.integrations.supabase.models import SupabaseVerificationPayload
+
+logger = logging.getLogger(__name__)
+
+
+def safeDatabaseErrorMetadata(response: httpx.Response) -> tuple[str | None, str | None]:
+    """Extract bounded identifiers without logging untrusted database response text."""
+
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return None, None
+    if not isinstance(payload, Mapping):
+        return None, None
+
+    databaseCode = payload.get("code")
+    safeCode = (
+        databaseCode
+        if isinstance(databaseCode, str)
+        and 1 <= len(databaseCode) <= 20
+        and all(character.isalnum() or character in "_-" for character in databaseCode)
+        else None
+    )
+
+    message = payload.get("message")
+    if not isinstance(message, str):
+        return safeCode, None
+    constraintMatch = re.search(r'constraint "([A-Za-z0-9_]{1,100})"', message)
+    return safeCode, constraintMatch.group(1) if constraintMatch else None
 
 
 class SupabaseRestGateway:
@@ -54,7 +86,22 @@ class SupabaseRestGateway:
                 },
             )
             response.raise_for_status()
-        except (httpx.RequestError, httpx.HTTPStatusError) as error:
+        except httpx.HTTPStatusError as error:
+            databaseCode, constraintName = safeDatabaseErrorMetadata(error.response)
+            logger.warning(
+                "Supabase save failed statusCode=%s databaseCode=%s constraint=%s",
+                error.response.status_code,
+                databaseCode,
+                constraintName,
+            )
+            raise PersistenceUnavailableError(
+                "Supabase could not save the verification."
+            ) from error
+        except httpx.RequestError as error:
+            logger.warning(
+                "Supabase save failed statusCode=None errorType=%s",
+                type(error).__name__,
+            )
             raise PersistenceUnavailableError(
                 "Supabase could not save the verification."
             ) from error

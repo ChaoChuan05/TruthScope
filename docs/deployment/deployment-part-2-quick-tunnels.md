@@ -1,6 +1,7 @@
 # TruthScope deployment — Part 2: public HTTPS with Cloudflare Quick Tunnels
 
-Status: completed hackathon HTTPS tunnel path on 4 September 2026.
+Status: completed on 4 September 2026; application-image redeployment and end-to-end flow
+revalidated on 5 September 2026.
 
 This runbook continues [Deployment Part 1](deployment-part-1.md). Part 1 builds the two images,
 stores them in private Amazon ECR, pulls them onto EC2, and starts the backend and frontend
@@ -40,13 +41,17 @@ flowchart LR
     FrontURL --> FrontTunnel --> Front
     Browser -->|API requests| BackURL
     BackURL --> BackTunnel --> Back
-    Browser -->|Google OAuth through Supabase| Supabase
+    Browser -->|Google/GitHub OAuth through Supabase| Supabase
     Back --> Supabase
     Back --> Providers
 ~~~
 
 `cloudflared` uses outbound connections, so ports 8000 and 8080 do not need to remain publicly
 allowed in the EC2 Security Group after the tunnels are validated.
+
+In the validated final state, the Security Group retained only operator-restricted SSH ingress;
+both application ports were removed. Temporary tunnel hostnames are intentionally not copied into
+this document because they can change whenever a tunnel container is recreated.
 
 ## 2. Important limitations
 
@@ -56,7 +61,7 @@ Read these before continuing:
 - Each tunnel receives a random `https://...trycloudflare.com` URL.
 - Recreating or restarting a tunnel container can produce a new URL.
 - When either URL changes, update the EC2 env files, recreate the application containers, and
-  update the Supabase/Google allowlists again.
+  update Supabase and provider allowlists again.
 - Anyone who knows the backend tunnel URL can reach the public API. UI login controls do not by
   themselves protect a separately exposed API endpoint.
 - Use this setup only for a controlled demo window. Stop both tunnel containers afterward.
@@ -95,8 +100,8 @@ Also confirm:
 - EC2 can make outbound HTTPS requests;
 - `~/truthscope/backend.env` exists and has mode `600`;
 - `~/truthscope/frontend.env` exists;
-- Google is enabled under Supabase **Authentication → Sign In / Providers**; and
-- an Owner or Administrator is available for Supabase and Google project settings.
+- Google and/or GitHub are enabled under Supabase **Authentication → Sign In / Providers**; and
+- an Owner or Administrator is available for Supabase and provider project settings.
 
 Do not print the backend env file because it contains secrets.
 
@@ -309,7 +314,7 @@ change project settings. If **Add URL** fails with `Forbidden` or `Unauthorized`
 Owner or Administrator to perform this step; do not request their password or access token. See
 [Supabase access control](https://supabase.com/docs/guides/platform/access-control).
 
-## 10. Confirm Google OAuth configuration
+## 10. Confirm OAuth provider configuration
 
 In Google Auth Platform, open the Web application OAuth client used by Supabase:
 
@@ -337,6 +342,16 @@ documents both settings.
 
 If the OAuth client belongs to a teammate's Google Cloud project, that teammate must make this
 change or grant an appropriate project role. Never exchange the Google client secret in chat.
+
+For GitHub, set OAuth App **Homepage URL** to frontend tunnel URL. Keep **Authorization callback
+URL** as Supabase callback shown under **Authentication → Sign In / Providers → GitHub**:
+
+~~~text
+https://PROJECT_REF.supabase.co/auth/v1/callback
+~~~
+
+Never place GitHub Client Secret in frontend environment. See
+[Supabase GitHub sign-in guide](https://supabase.com/docs/guides/auth/social-login/auth-github).
 
 ## 11. Validate the public application
 
@@ -371,7 +386,7 @@ Run this with the real tunnel names:
 
 ~~~bash
 curl -i -X OPTIONS \
-  https://BACKEND_RANDOM_NAME.trycloudflare.com/api/v1/verifications \
+  https://BACKEND_RANDOM_NAME.trycloudflare.com/api/v1/verification-jobs \
   -H 'Origin: https://FRONTEND_RANDOM_NAME.trycloudflare.com' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: authorization,content-type'
@@ -383,14 +398,17 @@ The response must include an `access-control-allow-origin` header matching the f
 
 1. Open the frontend tunnel URL.
 2. Open browser developer tools with `F12` and select **Console** and **Network**.
-3. Sign in with Google.
-4. Confirm Google returns to the frontend tunnel rather than `localhost`.
-5. Submit a known text claim.
-6. Wait for a complete or explicitly degraded result.
-7. Confirm claims, evidence, two verifier analyses, judge, bias audit, score, and Gonka inference
+3. Sign in with Google and GitHub separately.
+4. Confirm both providers return to frontend tunnel rather than `localhost`.
+5. Submit a known text claim and confirm the activity panel appears.
+6. Change the UI language while it runs and confirm the controls remain responsive. The active
+   report retains the language selected when it was submitted.
+7. Refresh the page while the job is running and confirm the same job resumes polling.
+8. Wait for a complete or explicitly degraded result.
+9. Confirm claims, evidence, two verifier analyses, judge, bias audit, score, and Gonka inference
    metadata are shown when available.
-8. Open History and reload the persisted result.
-9. Confirm another tester can repeat the flow from a different network.
+10. Open History and reload the persisted result.
+11. Confirm another tester can repeat the flow from a different network.
 
 ## 12. Remove temporary public EC2 ports
 
@@ -459,7 +477,58 @@ Press `Ctrl+C` to stop the combined follower. For OAuth diagnosis, also inspect:
 Do not paste logs containing access tokens, authorization headers, API keys, email addresses, or
 other personal data into public issues or chat.
 
-## 14. Troubleshooting
+## 14. Redeploy application images without changing tunnel URLs
+
+Application and tunnel containers have separate lifecycles. For a code release, follow the guarded
+workstation build/push and EC2 pull procedure in
+[Part 1 section 12](deployment-part-1.md#12-deploy-a-later-image), then recreate only
+<code>truthscope-backend</code> and <code>truthscope-frontend</code>. Do not remove, restart, or
+recreate either <code>truthscope-*-tunnel</code> container during an ordinary application release.
+
+Before changing the application containers, confirm the current tunnels are running:
+
+~~~bash
+docker ps --filter name=truthscope-backend-tunnel \
+  --filter name=truthscope-frontend-tunnel
+~~~
+
+After retagging the pulled release images as <code>truthscope-backend:local</code> and
+<code>truthscope-frontend:local</code>:
+
+1. recreate the backend with the section 8 command;
+2. wait for backend health;
+3. recreate the frontend with the section 8 command;
+4. wait for frontend health; and
+5. retest both public URLs, CORS, OAuth, refresh recovery, and History.
+
+Extract the public URLs again to confirm they did not rotate:
+
+~~~bash
+docker logs truthscope-backend-tunnel 2>&1 \
+  | grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+  | tail -1
+
+docker logs truthscope-frontend-tunnel 2>&1 \
+  | grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+  | tail -1
+~~~
+
+If the browser still shows the old UI, first inspect the running image instead of rotating the
+tunnels:
+
+~~~bash
+docker exec truthscope-frontend sh -c \
+  "grep -nE 'languageSelect|verification-jobs' /usr/share/nginx/html/script.js | head"
+~~~
+
+If the expected markers are absent, an old local image was retagged or deployed. Rebuild locally,
+verify the image contents, push a new immutable release tag, and redeploy. If the markers are
+present, hard-refresh or use a private browser window.
+
+An in-flight verification job is process-local and will be lost when the backend container is
+recreated. Deploy between demo runs, not during one.
+
+## 15. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -473,6 +542,9 @@ other personal data into public issues or chat.
 | Supabase URL button fails with permission error | Current member is a Developer | Ask an Owner/Administrator to add the redirect URL |
 | Google reports `redirect_uri_mismatch` | Wrong Google authorized redirect URI | Use the exact Supabase callback from its provider page |
 | Frontend works locally but not publicly | Frontend tunnel stopped or URL changed | Inspect tunnel status/logs and repeat URL alignment |
+| Newly deployed page still looks old | Old local image was tagged, or browser cache is stale | Inspect the running file; rebuild/push a new tag if absent, otherwise hard-refresh |
+| `DescribeImages` is denied on EC2 | Pull-only role has no discovery permission | Copy the exact successfully pushed release tag from workstation |
+| Pulled image tag is not found | Placeholder/example tag was used or push did not finish | Use the exact ECR tag printed by the successful workstation push |
 
 General status commands:
 
@@ -500,7 +572,7 @@ do
 done
 ~~~
 
-## 15. Reboot and URL-change recovery
+## 16. Reboot and URL-change recovery
 
 All four containers use `--restart unless-stopped`, but Quick Tunnel hostnames are not persistent.
 After an EC2 reboot or any tunnel-container restart:
@@ -514,7 +586,7 @@ After an EC2 reboot or any tunnel-container restart:
 
 Do not assume a bookmarked Quick Tunnel URL will keep working.
 
-## 16. Stop public access after the demo
+## 17. Stop public access after the demo
 
 Stop the two tunnel containers:
 
@@ -533,7 +605,25 @@ docker rm truthscope-backend-tunnel truthscope-frontend-tunnel
 
 The application images, application containers, env files, and Supabase data remain intact.
 
-## 17. Permanent next step
+## 18. Elastic IP decision
+
+An Elastic IP is not required for the current Quick Tunnel design. Browsers connect to the two
+<code>trycloudflare.com</code> hostnames, and <code>cloudflared</code> establishes outbound
+connections from EC2. Changing the EC2 public IPv4 address does not by itself rename a still-running
+tunnel.
+
+An Elastic IP also does not make a Quick Tunnel hostname permanent. Recreating or restarting a
+Quick Tunnel can assign a different random hostname, requiring the URL-alignment steps in sections
+6–10. An Elastic IP is useful only if the team needs a stable direct EC2 address for SSH or another
+IP-based route. AWS charges for public IPv4 addresses, including Elastic IP addresses; review the
+official [EC2 IP addressing guidance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html)
+before allocating one.
+
+For the hackathon, the simplest choice is to keep the EC2 instance and both tunnel containers
+running through the demo, then stop public access using section 17. For a stable public service,
+replace Quick Tunnels rather than adding an Elastic IP solely for them.
+
+## 19. Permanent next step
 
 Replace Quick Tunnels before treating the application as a persistent service. Recommended choices:
 

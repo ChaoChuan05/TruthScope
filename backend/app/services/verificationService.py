@@ -1,3 +1,4 @@
+import logging
 from uuid import uuid4
 
 from app.agents.graph import PROMPT_VERSION, VerificationWorkflow
@@ -7,6 +8,8 @@ from app.schemas.agentOutput import WorkflowError
 from app.schemas.common import InputType, VerificationStatus, utcNow
 from app.schemas.evidence import EvidenceRecord
 from app.schemas.verification import VerificationRequest, VerificationResult
+
+logger = logging.getLogger(__name__)
 
 
 class VerificationService:
@@ -58,7 +61,13 @@ class VerificationService:
         result = finalState["result"]
         try:
             await self.repository.save(result)
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "Verification persistence failed requestId=%s verificationId=%s errorType=%s",
+                result.requestId,
+                result.verificationId,
+                type(error).__name__,
+            )
             result.status = VerificationStatus.DEGRADED
             result.warnings.append("Verification completed but could not be saved.")
             result.errors.append(

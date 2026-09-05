@@ -41,7 +41,7 @@ app/
 │   └── supabase/               Auth, repository, RPC gateway, and mapping
 ├── prompts/                    Versioned production prompts and JSON contracts
 ├── schemas/                    Pydantic request, result, evidence, and agent models
-└── services/                   Verification lifecycle, source logic, deterministic scoring
+└── services/                   Verification jobs/lifecycle, topics, source logic, scoring
 tests/
 ├── unit/                       Pure logic, validation, security, and adapter tests
 └── integration/                API, graph, Gonka, retrieval, and persistence tests
@@ -106,8 +106,10 @@ Verifier A, verifier B, and consensus judge model IDs must be distinct. Startup 
 IDs. Other model availability depends on Gonka account routing.
 
 The frontend uses the resumable job endpoints. A job continues after page refresh and the browser
-stores only its opaque job ID and start time. The job registry is process-local: a backend restart
-or multiple workers require a shared job store, which this hackathon deployment does not include.
+stores only its opaque job ID, start time, and submitted language. The job registry is
+process-local: run one Uvicorn worker and one backend container. A backend restart loses active job
+state; multiple workers require a shared durable job store, which this hackathon deployment does
+not include.
 
 <code>GONKA_REDUCED_CALLS=true</code> is the default latency mode. It replaces generative evidence
 planning and context analysis with deterministic steps, reducing the normal workflow from seven to

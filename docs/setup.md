@@ -1,6 +1,6 @@
 # TruthScope setup and local development
 
-This guide configures backend, frontend, Supabase, Google OAuth, automated tests, and one live
+This guide configures backend, frontend, Supabase, Google/GitHub OAuth, automated tests, and one live
 verification from a fresh clone.
 
 Run repository commands from project root unless section says <code>cd backend</code> or
@@ -14,7 +14,7 @@ Required:
 - Python 3.12, 3.13, or 3.14
 - modern browser
 - Supabase project for login and protected routes
-- Google OAuth Web application
+- Google OAuth Web application and/or GitHub OAuth App
 - Gonka Router API key for live AI calls
 - Brave Search API key for live text-claim evidence retrieval
 
@@ -143,7 +143,7 @@ Use backend-only Supabase secret or legacy <code>service_role</code> key for
 | <code>CORS_ALLOWED_ORIGINS</code> | Local port 5500 origins | Exact browser origins |
 | <code>GONKA_BASE_URL</code> | <code>https://api.gonkarouter.io</code> | Gonka base |
 | <code>GONKA_API_KEY</code> | empty | Required for live AI |
-| <code>GONKA_ORCHESTRATOR_MODEL</code> | MiniMax M2.7 | Extraction, planning, context |
+| <code>GONKA_ORCHESTRATOR_MODEL</code> | MiniMax M2.7 | Claim extraction; planning/context only when reduced-call mode is off |
 | <code>GONKA_MODEL_A</code> | Kimi K2.6 | Verifier A |
 | <code>GONKA_MODEL_B</code> | MiniMax M2.7 | Verifier B |
 | <code>GONKA_JUDGE_MODEL</code> | DeepSeek V4 Flash | Consensus judge |
@@ -187,6 +187,7 @@ Repository contains ordered SQL migrations under <code>supabase/migrations/</cod
 20260902040000_gonka_verification_result_schema.sql
 20260902050000_save_verification_result.sql
 20260902060000_get_verification_result.sql
+20260905010000_allow_same_served_model_analyses.sql
 ~~~
 
 Supabase/database owner must review and apply them in order through team's approved Supabase
@@ -206,15 +207,15 @@ Get values from Supabase project settings:
 - publishable or legacy <code>anon</code> key for frontend;
 - backend secret or legacy <code>service_role</code> key for backend.
 
-## 6. Configure Google OAuth
+## 6. Configure Google and GitHub OAuth
 
 ### Supabase Dashboard
 
 1. Open **Authentication > URL Configuration**.
 2. Set local Site URL to <code>http://127.0.0.1:5500/</code>.
 3. Add <code>http://127.0.0.1:5500/</code> to Redirect URLs.
-4. Open **Authentication > Providers > Google**.
-5. Enable Google and enter Google client ID and secret.
+4. Open **Authentication > Providers**.
+5. Enable Google and/or GitHub and enter each provider's client ID and secret.
 
 ### Google Auth Platform
 
@@ -233,6 +234,18 @@ https://YOUR_PROJECT_REF.supabase.co/auth/v1/callback
 ~~~
 
 Google redirects to Supabase callback first. Supabase then redirects to configured frontend URL.
+
+### GitHub OAuth App
+
+Create a GitHub OAuth App. Use frontend URL as **Homepage URL** and use this exact
+**Authorization callback URL**:
+
+~~~text
+https://YOUR_PROJECT_REF.supabase.co/auth/v1/callback
+~~~
+
+Copy GitHub Client ID and Client Secret into Supabase **Authentication > Providers > GitHub**.
+GitHub redirects to Supabase callback first; Supabase then redirects to configured frontend URL.
 
 Use exact same scheme, hostname, port, and path. <code>localhost</code> and
 <code>127.0.0.1</code> are different origins.
@@ -313,7 +326,7 @@ Health reports configuration presence, not successful live calls.
 ## 10. Test through browser
 
 1. Open frontend.
-2. Sign in with Google.
+2. Sign in with Google, then repeat later with GitHub.
 3. Confirm user name and History appear.
 4. Enter:
 
@@ -322,9 +335,11 @@ Malaysia reported a population of 34.1 million in 2024.
 ~~~
 
 5. Select **Run Verification**.
-6. Watch expandable estimated progress panel.
-7. Wait for final result.
-8. Confirm:
+6. While it runs, change the UI language and confirm the controls still respond. The active job
+   keeps the output language selected at submission.
+7. Refresh the page and confirm the same active job resumes polling instead of disappearing.
+8. Watch the expandable estimated progress panel and wait for the final result.
+9. Confirm:
    - status is complete, inconclusive, degraded, or failed;
    - evidence links open public source pages;
    - two verifier analyses appear on complete run;
@@ -479,11 +494,11 @@ also cannot authenticate in default app until Supabase is configured.
 Bearer token is missing, expired, invalid, or backend Supabase Auth is not configured. Sign in again
 and verify frontend/backend use same Supabase project.
 
-### Google redirects to unreachable <code>localhost</code>
+### OAuth redirects to unreachable <code>localhost</code>
 
 Supabase rejected requested redirect and used Site URL fallback. Make frontend address,
-<code>OAUTH_REDIRECT_URL</code>, Supabase Site URL, Supabase Redirect URLs, and Google origin agree
-exactly.
+<code>OAUTH_REDIRECT_URL</code>, Supabase Site URL, Supabase Redirect URLs, and provider application
+settings agree exactly.
 
 ### Browser reports CORS error
 

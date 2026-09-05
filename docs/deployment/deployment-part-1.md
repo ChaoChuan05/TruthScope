@@ -1,6 +1,7 @@
 # TruthScope deployment — Part 1: Docker images on Amazon EC2
 
-Status: completed prototype deployment on 4 September 2026.
+Status: completed prototype deployment on 4 September 2026; image release procedure revalidated on
+5 September 2026.
 
 This runbook records the first working TruthScope cloud deployment. It is intended for rebuilding,
 debugging, or handing over the environment without relying on chat history.
@@ -29,8 +30,9 @@ Cloudflare Tunnel, and ECR. The path actually completed was **local build → pr
 | Frontend | Rootless Nginx container on host port 8080 |
 | Persistence | External Supabase integration |
 | Container restart | `unless-stopped` |
-| Network access | Ports 8000 and 8080 restricted to operator IP |
+| Network access | Initial direct test used operator-only ports; current public path uses outbound tunnels |
 | First recorded tag | Git commit `5ca3569` |
+| Revalidated application release | Git commit `ad83fb7`, corrected artifact tag `ad83fb7-r2` |
 | Backend health | `/api/v1/health` returned configured providers and persistence |
 | Frontend health | `/healthz` returned `ok` |
 
@@ -207,14 +209,22 @@ aws ecr create-repository \
 `RepositoryAlreadyExistsException` is expected when repeating this step. If output opens at
 `(END)`, press `q`; disabling `cli_pager` above prevents recurrence.
 
-Authenticate Docker, then build, tag, and push:
+Authenticate Docker, then build, inspect, tag, and push. Building must happen before assigning the
+release tag; otherwise an old local image can be published under a new Git-looking tag:
 
 ~~~bash
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-docker build -t truthscope-backend:local backend
-docker build -t truthscope-frontend:local frontend
+git status --short
+docker build --pull --no-cache -t truthscope-backend:local backend
+docker build --pull --no-cache -t truthscope-frontend:local frontend
+
+docker run --rm --entrypoint sh truthscope-backend:local \
+  -c "grep -q 'verification-jobs' /app/app/api/v1/verifications.py && echo 'Backend is current'"
+
+docker run --rm --entrypoint sh truthscope-frontend:local \
+  -c "grep -q 'verification-jobs' /usr/share/nginx/html/script.js && echo 'Frontend is current'"
 
 docker tag \
   truthscope-backend:local \
@@ -277,13 +287,15 @@ aws sts get-caller-identity
 Installing `unzip` is required by the official CLI installer. Do not run `aws login` or
 `aws configure` on EC2; the attached instance role supplies temporary credentials.
 
-Set deployment values on EC2. Copy the actual Git tag printed on the workstation:
+Set deployment values on EC2. Copy the exact release tag printed after the workstation push. Do
+not type an example tag or try to infer the newest tag on an EC2 role that only has pull access:
 
 ~~~bash
 export AWS_REGION=us-east-1
 export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 export ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-export IMAGE_TAG=<GIT_COMMIT_TAG>
+read -r -p 'Exact release tag from workstation: ' IMAGE_TAG
+test -n "$IMAGE_TAG"
 ~~~
 
 Authenticate and pull:
@@ -354,8 +366,8 @@ SUPABASE_URL=https://<PROJECT_REF>.supabase.co
 SUPABASE_PUBLISHABLE_KEY=<PUBLIC_PUBLISHABLE_OR_ANON_KEY>
 ~~~
 
-These four values are browser-visible. Do not add `SUPABASE_KEY`, `service_role`, Gonka, Brave, or
-Google client secrets.
+These four values are browser-visible. Do not add `SUPABASE_KEY`, `service_role`, Gonka, Brave,
+Google, or GitHub client secrets.
 
 An env file is not a JavaScript object. Do not use colons, quotes, trailing commas, spaces around
 `=`, or Markdown links such as `[URL](URL)`. To avoid pasted-link corruption, generate the two
@@ -474,6 +486,8 @@ completes Part 1.
 | `aws: command not found` on EC2 | CLI not installed | Install AWS CLI v2 |
 | CLI installer reports missing dependency | `unzip` absent | `sudo apt install -y unzip` |
 | ECR says `YOUR_IMAGE_TAG` not found | Placeholder used literally | Export actual Git tag |
+| ECR says `a1b2c3d` or another example tag is not found | Example value was copied literally | Copy the exact tag successfully pushed from workstation |
+| `DescribeImages` returns `AccessDeniedException` | EC2 role is intentionally pull-only | Do not broaden it just to discover a tag; supply the exact release tag from workstation |
 | Docker login warns about unencrypted config | No credential helper | Login still worked; add helper later |
 | `frontend.env: no such file` | Runtime file was not created/saved | Create it under `$HOME/truthscope` |
 | Docker env variable contains whitespace | JavaScript object pasted into env file | Use strict `KEY=value` lines |
@@ -481,6 +495,7 @@ completes Part 1.
 | Editing env does not fix existing container | Docker captured env at creation | Remove and recreate that container |
 | Local frontend URL uses `127.0.0.1` | Browser would call visitor's own machine | Use EC2 public origin temporarily |
 | Public request times out | Security Group does not allow client IP | Add ports 8000/8080 from **My IP** |
+| New tag runs but UI is still old | Old local image was tagged without rebuilding, or browser cache is stale | Rebuild and inspect locally, push a unique release tag, redeploy, then hard-refresh |
 
 Useful diagnostics:
 
@@ -504,10 +519,73 @@ docker rm -f truthscope-frontend
 
 ## 12. Deploy a later image
 
-On the workstation, repeat authentication, build, tag, and push with a new Git-derived tag. On EC2:
+### 12.1 Workstation: build and publish the actual new code
+
+Run from repository root. Confirm the intended commit and working tree first:
 
 ~~~bash
-export IMAGE_TAG=<NEW_GIT_COMMIT_TAG>
+git rev-parse --short HEAD
+git status --short
+
+export AWS_REGION=us-east-1
+export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+export ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+export IMAGE_TAG="$(git rev-parse --short HEAD)"
+
+printf 'Publishing release tag: %s\n' "$IMAGE_TAG"
+~~~
+
+If a previously pushed artifact for the same commit was built incorrectly, do not reuse its tag.
+Create a new immutable release suffix, for example:
+
+~~~bash
+export IMAGE_TAG="$(git rev-parse --short HEAD)-r2"
+~~~
+
+Build and inspect both images before tagging them for ECR:
+
+~~~bash
+docker build --pull --no-cache -t truthscope-backend:local backend
+docker build --pull --no-cache -t truthscope-frontend:local frontend
+
+docker run --rm --entrypoint sh truthscope-backend:local \
+  -c "grep -q 'verification-jobs' /app/app/api/v1/verifications.py && echo 'Backend is current'"
+
+docker run --rm --entrypoint sh truthscope-frontend:local \
+  -c "grep -q 'languageSelect' /usr/share/nginx/html/script.js \
+      && grep -q 'verification-jobs' /usr/share/nginx/html/script.js \
+      && echo 'Frontend is current'"
+~~~
+
+Authenticate, tag, and push only after those checks pass:
+
+~~~bash
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+docker tag truthscope-backend:local \
+  "$ECR_REGISTRY/truthscope-backend:$IMAGE_TAG"
+docker tag truthscope-frontend:local \
+  "$ECR_REGISTRY/truthscope-frontend:$IMAGE_TAG"
+
+docker push "$ECR_REGISTRY/truthscope-backend:$IMAGE_TAG"
+docker push "$ECR_REGISTRY/truthscope-frontend:$IMAGE_TAG"
+
+printf 'Copy this exact tag to EC2: %s\n' "$IMAGE_TAG"
+~~~
+
+### 12.2 EC2: pull and activate the exact release
+
+The instance role can authenticate and pull. It may intentionally lack
+<code>ecr:DescribeImages</code>, so supply the printed workstation tag rather than querying for
+“latest”:
+
+~~~bash
+export AWS_REGION=us-east-1
+export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+export ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+read -r -p 'Exact release tag from workstation: ' IMAGE_TAG
+test -n "$IMAGE_TAG"
 
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
@@ -524,9 +602,22 @@ docker tag \
   truthscope-frontend:local
 ~~~
 
-Then recreate the two containers one at a time with the commands in section 9. For a hackathon
-deployment, replace and validate the backend first, then the frontend. A later phase should automate
-this release process.
+Keep the two <code>truthscope-*-tunnel</code> containers running. Recreate the application
+containers one at a time with the commands in section 9: replace and validate backend first, then
+frontend. Because the tunnels are not recreated, their current public URLs normally remain the
+same.
+
+Verify the running frontend actually contains the release, then hard-refresh the browser:
+
+~~~bash
+docker exec truthscope-frontend sh -c \
+  "grep -nE 'languageSelect|verification-jobs' /usr/share/nginx/html/script.js | head"
+curl -sS http://127.0.0.1:8000/api/v1/health
+curl -sS http://127.0.0.1:8080/healthz
+~~~
+
+If the UI is still old after the container check succeeds, use a private window or clear the
+browser cache. A later phase should automate this release process and record image digests.
 
 ## 13. Part 1 limitations and Part 2 entry point
 
@@ -537,7 +628,7 @@ It is not yet a production-ready public endpoint:
 - the frontend and backend expose ports 8080 and 8000 directly;
 - access is limited to the operator's changing public IP;
 - the EC2 public address can change after stop/start;
-- Google OAuth redirects are not finalized for a public HTTPS origin;
+- OAuth redirects are not finalized for a public HTTPS origin;
 - backend secrets live in an EC2 file rather than AWS Secrets Manager;
 - no reverse proxy, Cloudflare Tunnel, domain, certificate, monitoring, or CI/CD is configured; and
 - verification jobs survive browser refresh but not a backend container restart, and require one
@@ -558,7 +649,7 @@ Then update these values together:
 - frontend `OAUTH_REDIRECT_URL`;
 - backend `CORS_ALLOWED_ORIGINS`;
 - Supabase Site URL and Redirect URLs; and
-- Google OAuth authorized origin and Supabase callback.
+- Google/GitHub OAuth application settings and Supabase callback.
 
 The target production-oriented alternatives remain documented in [deployment.md](../deployment.md).
 System boundaries are documented in [architecture.md](../architecture.md).
