@@ -5,15 +5,35 @@ from app.agents.nodes.common import (
     NodeUpdate,
     evidenceForModel,
     inferenceMetadata,
-    loadPrompt,
+    localizedPrompt,
     workflowError,
 )
 from app.agents.state import VerificationGraphState
 from app.integrations.gonka.client import GonkaClientProtocol
-from app.integrations.gonka.mapper import parseStructuredOutput
+from app.integrations.gonka.mapper import parseStructuredInference
 from app.schemas.agentOutput import ContextAnalysis, GonkaInferenceRecord
 
 logger = logging.getLogger(__name__)
+
+
+async def deterministicContextAnalysis(state: VerificationGraphState) -> NodeUpdate:
+    """Keep context explicit while independent verifiers perform detailed review."""
+
+    missingDateCount = sum(
+        evidence.source.publicationDate is None for evidence in state.get("evidence", [])
+    )
+    warnings = []
+    if missingDateCount:
+        warnings.append(f"{missingDateCount} evidence source(s) had no verified publication date.")
+    return {
+        "contextAnalysis": ContextAnalysis(
+            findings=[
+                "Dates, quotations, statistics, and missing context require verifier review."
+            ],
+            warnings=warnings,
+        ),
+        "warnings": warnings,
+    }
 
 
 def createContextAnalysisNode(
@@ -26,16 +46,22 @@ def createContextAnalysisNode(
             inference = await gonkaClient.infer(
                 taskName="contextAnalysis",
                 model=modelName,
-                systemPrompt=loadPrompt("contextAnalysis.md"),
+                systemPrompt=localizedPrompt(
+                    "contextAnalysis.md",
+                    state["outputLanguage"],
+                ),
                 inputPayload={
                     "claims": [claim.model_dump(mode="json") for claim in state["claims"]],
                     "evidence": evidenceForModel(
                         state["evidence"],
-                        maxExcerptChars=4_000,
+                        maxExcerptChars=1_500,
                     ),
+                    "outputLanguage": state["outputLanguage"].value,
                 },
+                applicationRequestId=state.get("requestId"),
+                maxTokens=1_024,
             )
-            output = parseStructuredOutput(inference.outputText, ContextAnalysis)
+            output = parseStructuredInference(inference, ContextAnalysis)
             validEvidenceIds = {evidence.evidenceId for evidence in state["evidence"]}
             citedIds = set(output.staleEvidenceIds + output.suspectedTruncationEvidenceIds)
             if not citedIds.issubset(validEvidenceIds):

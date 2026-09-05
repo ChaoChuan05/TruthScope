@@ -40,9 +40,9 @@ neutrality. Inconclusive is a valid result.
 ## User experience
 
 Authenticated users can submit text or a public URL, watch an expandable progress panel, inspect
-the final evidence pack and model comparison, and reopen private verification history. Progress
-stages are labelled estimated while the synchronous backend request is running. Confirmed model,
-latency, and request metadata replace those estimates after the backend responds.
+the final evidence pack and model comparison, and reopen private verification history. The browser
+polls a resumable backend job, so refresh keeps tracking an active run. Progress stages remain
+estimated until confirmed model, latency, and request metadata replace them at completion.
 
 Gonka request IDs provide inference traceability. They are not blockchain transactions, proof of
 immutability, or proof that a verdict is correct.

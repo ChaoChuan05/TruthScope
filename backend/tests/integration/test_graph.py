@@ -1,8 +1,9 @@
 from copy import deepcopy
 
+from app.agents.nodes.common import localizedPrompt
 from app.core.exceptions import GonkaUnavailableError
 from app.integrations.retrieval.client import documentToEvidence
-from app.schemas.common import SourceType, VerificationStatus
+from app.schemas.common import OutputLanguage, SourceType, VerificationStatus
 from app.schemas.verification import VerificationRequest
 from tests.conftest import standardResponses
 
@@ -32,6 +33,57 @@ async def test_completeGraph_preservesEvidenceAndGonkaRequestIds(
     taskOrder = [taskName for taskName, _ in fakeClient.calls]
     assert taskOrder.index("verifierModelA") < taskOrder.index("verifierModelB")
     assert taskOrder.index("verifierModelB") < taskOrder.index("consensusJudge")
+
+
+async def test_reducedCallMode_keepsIndependentDecisionLayers(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    service, fakeClient = serviceFactory(
+        [sampleEvidence],
+        reducedGonkaCalls=True,
+    )
+
+    result = await service.verifyClaim(
+        VerificationRequest(input="The measured value was 42 units.")
+    )
+
+    assert result.status == VerificationStatus.COMPLETE
+    assert len(result.agentAnalyses) == 2
+    assert result.judgeResult is not None
+    assert result.biasAudit is not None
+    assert len(result.inferenceRecords) == 5
+    assert fakeClient.callCounts["evidencePlanning"] == 0
+    assert fakeClient.callCounts["contextAnalysis"] == 0
+    assert [taskName for taskName, _ in fakeClient.calls] == [
+        "claimExtraction",
+        "verifierModelA",
+        "verifierModelB",
+        "consensusJudge",
+        "biasAudit",
+    ]
+
+
+async def test_outputLanguage_reachesEveryModelCall(sampleEvidence, serviceFactory) -> None:
+    service, fakeClient = serviceFactory([sampleEvidence])
+
+    result = await service.verifyClaim(
+        VerificationRequest(
+            input="Nilai yang diukur ialah 42 unit.",
+            outputLanguage=OutputLanguage.MALAY,
+        )
+    )
+
+    assert result.outputLanguage == OutputLanguage.MALAY
+    assert fakeClient.calls
+    assert all(payload["outputLanguage"] == "ms" for _, payload in fakeClient.calls)
+
+
+def test_localizedPrompt_preservesSchemaWhileSelectingMandarin() -> None:
+    prompt = localizedPrompt("verification.md", OutputLanguage.MANDARIN)
+
+    assert "Simplified Chinese (Mandarin)" in prompt
+    assert "Keep JSON property names, enum values" in prompt
 
 
 async def test_parallelVerifierMode_remainsAvailable(sampleEvidence, serviceFactory) -> None:
@@ -71,6 +123,51 @@ async def test_oneVerifierFailure_preservesSuccessfulAnalysis(
     assert any(error.stage == "verifierModelB" for error in result.errors)
     assert result.score is not None
     assert result.score.confidenceScore < 70
+    assert result.score.verdict == "mixed_or_inconclusive"
+
+
+async def test_invalidVerifierOutput_getsOneStructuredRepair(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    responses = standardResponses()
+    validOutput = deepcopy(responses["verifierModelA"][0])
+    responses["verifierModelA"] = ["not valid JSON", validOutput]
+    service, fakeClient = serviceFactory([sampleEvidence], responses)
+
+    result = await service.verifyClaim(
+        VerificationRequest(input="The measured value was 42 units.")
+    )
+
+    assert result.status == VerificationStatus.COMPLETE
+    assert fakeClient.callCounts["verifierModelA"] == 2
+    verifierRecords = [
+        record for record in result.inferenceRecords if record.taskName == "verifierModelA"
+    ]
+    assert len(verifierRecords) == 2
+    assert len(result.agentAnalyses) == 2
+
+
+async def test_invalidVerifierOutput_exhaustsOneRepairThenDegrades(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    responses = standardResponses()
+    responses["verifierModelA"] = ["not valid JSON", "still not valid JSON"]
+    service, fakeClient = serviceFactory([sampleEvidence], responses)
+
+    result = await service.verifyClaim(
+        VerificationRequest(input="The measured value was 42 units.")
+    )
+
+    assert result.status == VerificationStatus.DEGRADED
+    assert fakeClient.callCounts["verifierModelA"] == 2
+    verifierRecords = [
+        record for record in result.inferenceRecords if record.taskName == "verifierModelA"
+    ]
+    assert len(verifierRecords) == 2
+    assert result.score is not None
+    assert result.score.verdict == "mixed_or_inconclusive"
 
 
 async def test_fabricatedEvidenceId_isRejected(
@@ -81,14 +178,98 @@ async def test_fabricatedEvidenceId_isRejected(
     badAnalysis = deepcopy(responses["verifierModelA"][0])
     assert isinstance(badAnalysis, dict)
     badAnalysis["analyses"][0]["usedEvidenceIds"] = ["fabricated-id"]  # type: ignore[index]
-    responses["verifierModelA"] = [badAnalysis]
-    service, _ = serviceFactory([sampleEvidence], responses)
+    responses["verifierModelA"] = [badAnalysis, deepcopy(standardResponses()["verifierModelA"][0])]
+    service, fakeClient = serviceFactory([sampleEvidence], responses)
     result = await service.verifyClaim(
         VerificationRequest(input="The measured value was 42 units.")
     )
-    assert len(result.agentAnalyses) == 1
-    assert any(error.stage == "verifierModelA" for error in result.errors)
-    assert any(record.taskName == "verifierModelA" for record in result.inferenceRecords)
+    assert len(result.agentAnalyses) == 2
+    assert not any(error.stage == "verifierModelA" for error in result.errors)
+    assert fakeClient.callCounts["verifierModelA"] == 2
+    assert all(
+        assessment.evidenceId == "evidence-1"
+        for analysis in result.agentAnalyses
+        for assessment in analysis.evidenceAssessments
+    )
+
+
+async def test_duplicateExtractedClaimId_failsBeforeRetrieval(serviceFactory) -> None:
+    responses = standardResponses()
+    duplicateClaim = deepcopy(responses["claimExtraction"][0]["claims"][0])  # type: ignore[index]
+    responses["claimExtraction"][0]["claims"].append(duplicateClaim)  # type: ignore[index,union-attr]
+    service, fakeClient = serviceFactory([], responses)
+
+    result = await service.verifyClaim(VerificationRequest(input="Duplicate claims."))
+
+    assert result.status == VerificationStatus.FAILED
+    assert fakeClient.callCounts["evidencePlanning"] == 0
+
+
+async def test_invalidBiasAuditOutput_exhaustsOneRepairThenDegrades(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    responses = standardResponses()
+    responses["biasAudit"] = ["not valid JSON", "still not valid JSON"]
+    service, fakeClient = serviceFactory([sampleEvidence], responses)
+
+    result = await service.verifyClaim(
+        VerificationRequest(input="The measured value was 42 units.")
+    )
+
+    assert result.status == VerificationStatus.DEGRADED
+    assert fakeClient.callCounts["biasAudit"] == 2
+    assert result.biasAudit is not None
+    assert result.biasAudit.status == "unavailable"
+    assert result.score is not None
+    assert result.score.verdict == "mixed_or_inconclusive"
+
+
+async def test_inconsistentPassedBiasAudit_getsStructuredRepair(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    responses = standardResponses()
+    inconsistentAudit = deepcopy(responses["biasAudit"][0])
+    inconsistentAudit["violations"] = ["A violation cannot coexist with passed status."]  # type: ignore[index]
+    responses["biasAudit"] = [inconsistentAudit, deepcopy(standardResponses()["biasAudit"][0])]
+    service, fakeClient = serviceFactory([sampleEvidence], responses)
+
+    result = await service.verifyClaim(
+        VerificationRequest(input="The measured value was 42 units.")
+    )
+
+    assert result.status == VerificationStatus.COMPLETE
+    assert fakeClient.callCounts["biasAudit"] == 2
+    assert result.biasAudit is not None
+    assert result.biasAudit.status == "passed"
+
+
+async def test_modelReportedUnavailableBiasAudit_degradesResult(
+    sampleEvidence,
+    serviceFactory,
+) -> None:
+    responses = standardResponses()
+    responses["biasAudit"] = [
+        {
+            "status": "unavailable",
+            "violations": [],
+            "omittedEvidenceIds": [],
+            "reasoningSummary": "Audit could not be completed.",
+            "confidencePenalty": 0.7,
+            "gonkaRequestId": None,
+        }
+    ]
+    service, _ = serviceFactory([sampleEvidence], responses)
+
+    result = await service.verifyClaim(
+        VerificationRequest(input="The measured value was 42 units.")
+    )
+
+    assert result.status == VerificationStatus.DEGRADED
+    assert any(error.code == "BIAS_AUDIT_UNAVAILABLE" for error in result.errors)
+    assert result.score is not None
+    assert result.score.verdict == "mixed_or_inconclusive"
 
 
 async def test_biasFinding_triggersOnlyOneTargetedCorrection(
@@ -254,6 +435,8 @@ async def test_judgeFailure_returnsDegradedWithoutPromotingVerifier(
     assert result.judgeResult is None
     assert result.biasAudit is not None
     assert result.biasAudit.status == "unavailable"
+    assert result.score is not None
+    assert result.score.verdict == "mixed_or_inconclusive"
     assert any(error.code == "JUDGE_FAILED" for error in result.errors)
 
 
@@ -267,6 +450,8 @@ async def test_biasAuditFailure_isNeverMarkedCleared(sampleEvidence, serviceFact
     assert result.status == VerificationStatus.DEGRADED
     assert result.biasAudit is not None
     assert result.biasAudit.status == "unavailable"
+    assert result.score is not None
+    assert result.score.verdict == "mixed_or_inconclusive"
 
 
 async def test_promptInjectionInEvidence_remainsData(

@@ -1,11 +1,21 @@
 import httpx
 import pytest
 
+from app.agents.nodes.evidencePlanner import createEvidenceNormalizationNode
 from app.integrations.retrieval.brave import BraveSearchEvidenceRetriever
 from app.integrations.retrieval.client import FixtureDocumentFetcher, UrlDocumentFetcher
 from app.schemas.common import InputType, SourceType
-from app.schemas.evidence import EvidenceQuery, RetrievedDocument, SourceMetadata
+from app.schemas.evidence import EvidenceQuery, EvidenceRecord, RetrievedDocument, SourceMetadata
 from app.schemas.verification import Claim
+
+
+class EchoDocumentFetcher:
+    async def fetch(self, url: str) -> RetrievedDocument:
+        return RetrievedDocument(
+            source=SourceMetadata(url=url, title=url),
+            text=f"Evidence from {url}",
+            contentType="text/html",
+        )
 
 
 def sampleClaim() -> Claim:
@@ -145,3 +155,221 @@ async def test_braveSearch_rejectsUnsafeResultUrls() -> None:
         )
 
     assert evidence == []
+
+
+async def test_braveSearch_enforcesPerClaimAndTotalEvidenceLimits() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        queryKey = str(request.url.params["q"]).replace(" ", "-")
+        return httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {
+                            "title": f"Result {index}",
+                            "url": f"https://evidence.example/{queryKey}/{index}",
+                        }
+                        for index in range(3)
+                    ]
+                }
+            },
+        )
+
+    claimOne = sampleClaim()
+    claimTwo = claimOne.model_copy(
+        update={
+            "claimId": "claim-2",
+            "originalText": "A second claim.",
+            "normalizedText": "A second claim.",
+        }
+    )
+    queries = [
+        sampleQuery(),
+        sampleQuery().model_copy(update={"query": "second query for claim one"}),
+        sampleQuery().model_copy(update={"claimId": "claim-2", "query": "query for claim two"}),
+    ]
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.search.brave.com",
+    ) as httpClient:
+        retriever = BraveSearchEvidenceRetriever(
+            apiKey="search-secret",
+            documentFetcher=EchoDocumentFetcher(),
+            maxEvidencePerClaim=2,
+            maxTotalEvidence=3,
+            httpClient=httpClient,
+        )
+        evidence = await retriever.retrieve(
+            queries=queries,
+            originalInput="Two claims",
+            inputType=InputType.TEXT,
+            claims=[claimOne, claimTwo],
+        )
+
+    assert len(evidence) == 3
+    assert sum("claim-1" in record.claimIds for record in evidence) == 2
+    assert sum("claim-2" in record.claimIds for record in evidence) == 1
+
+
+async def test_braveSearch_boundsQueriesBeforeNetworkIo() -> None:
+    callCount = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal callCount
+        callCount += 1
+        return httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {
+                            "title": "Result",
+                            "url": f"https://evidence.example/{callCount}",
+                        }
+                    ]
+                }
+            },
+        )
+
+    queries = [sampleQuery().model_copy(update={"query": f"query {index}"}) for index in range(5)]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.search.brave.com",
+    ) as httpClient:
+        retriever = BraveSearchEvidenceRetriever(
+            apiKey="search-secret",
+            documentFetcher=EchoDocumentFetcher(),
+            maxQueriesPerClaim=2,
+            httpClient=httpClient,
+        )
+        await retriever.retrieve(
+            queries=queries,
+            originalInput="Claim",
+            inputType=InputType.TEXT,
+            claims=[sampleClaim()],
+        )
+
+    assert callCount == 2
+
+
+async def test_braveSearch_redistributesUnusedClaimQuota() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["q"] == "no results":
+            return httpx.Response(200, json={"web": {"results": []}})
+        return httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {
+                            "title": f"Result {index}",
+                            "url": f"https://evidence.example/result/{index}",
+                        }
+                        for index in range(3)
+                    ]
+                }
+            },
+        )
+
+    claimOne = sampleClaim()
+    claimTwo = claimOne.model_copy(update={"claimId": "claim-2"})
+    queries = [
+        sampleQuery().model_copy(update={"query": "no results"}),
+        sampleQuery().model_copy(update={"claimId": "claim-2", "query": "three results"}),
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.search.brave.com",
+    ) as httpClient:
+        retriever = BraveSearchEvidenceRetriever(
+            apiKey="search-secret",
+            documentFetcher=EchoDocumentFetcher(),
+            maxEvidencePerClaim=3,
+            maxTotalEvidence=3,
+            httpClient=httpClient,
+        )
+        evidence = await retriever.retrieve(
+            queries=queries,
+            originalInput="Two claims",
+            inputType=InputType.TEXT,
+            claims=[claimOne, claimTwo],
+        )
+
+    assert len(evidence) == 3
+    assert all(record.claimIds == ["claim-2"] for record in evidence)
+
+
+async def test_braveSearch_backfillsAfterSourceFetchFailure() -> None:
+    class FailingFirstFetcher:
+        async def fetch(self, url: str) -> RetrievedDocument:
+            if url.endswith("/0"):
+                raise RuntimeError("unavailable source")
+            return await EchoDocumentFetcher().fetch(url)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {
+                            "title": f"Result {index}",
+                            "url": f"https://evidence.example/result/{index}",
+                        }
+                        for index in range(3)
+                    ]
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.search.brave.com",
+    ) as httpClient:
+        retriever = BraveSearchEvidenceRetriever(
+            apiKey="search-secret",
+            documentFetcher=FailingFirstFetcher(),
+            maxEvidencePerClaim=2,
+            maxTotalEvidence=2,
+            httpClient=httpClient,
+        )
+        evidence = await retriever.retrieve(
+            queries=[sampleQuery()],
+            originalInput="Claim",
+            inputType=InputType.TEXT,
+            claims=[sampleClaim()],
+        )
+
+    assert len(evidence) == 2
+    assert all(not str(record.source.url).endswith("/0") for record in evidence)
+
+
+async def test_evidenceNormalization_capsCombinedUserAndRetrievedEvidence() -> None:
+    records = [
+        EvidenceRecord(
+            evidenceId=f"evidence-{index}",
+            source=SourceMetadata(
+                url=f"https://example.com/{index}",
+                title=f"Evidence {index}",
+            ),
+            excerpt="Evidence.",
+            claimIds=["claim-1"],
+            quality={
+                "provenance": 1,
+                "directness": 1,
+                "dateRelevance": 1,
+                "contextCompleteness": 1,
+                "corroboration": 1,
+            },
+        )
+        for index in range(3)
+    ]
+    records[0].source.sourceType = SourceType.USER_PROVIDED
+    node = createEvidenceNormalizationNode(maxEvidencePerClaim=3, maxTotalEvidence=2)
+
+    update = await node({"claims": [sampleClaim()], "evidence": records})
+
+    assert len(update["evidence"]) == 2
+    assert "Total evidence limit reached" in update["warnings"][0]

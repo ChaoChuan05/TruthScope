@@ -17,6 +17,12 @@ class InputType(StrEnum):
     URL = "url"
 
 
+class OutputLanguage(StrEnum):
+    ENGLISH = "en"
+    MALAY = "ms"
+    MANDARIN = "zh-CN"
+
+
 class ClaimType(StrEnum):
     FACTUAL = "factual"
     QUOTATION = "quotation"

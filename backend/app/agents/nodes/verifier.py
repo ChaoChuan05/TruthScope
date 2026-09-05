@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from time import monotonic
 
 from pydantic import Field
 
@@ -7,12 +9,15 @@ from app.agents.nodes.common import (
     NodeUpdate,
     evidenceForModel,
     inferenceMetadata,
-    loadPrompt,
+    inferenceMetadataFor,
+    localizedPrompt,
+    structuredOutputRepairPrompt,
     workflowError,
 )
 from app.agents.state import VerificationGraphState
+from app.core.exceptions import InvalidModelOutputError
 from app.integrations.gonka.client import GonkaClientProtocol
-from app.integrations.gonka.mapper import parseStructuredOutput
+from app.integrations.gonka.mapper import parseStructuredInference
 from app.schemas.agentOutput import AgentAnalysis, EvidenceAssessment, GonkaInferenceRecord
 from app.schemas.common import EvidenceStance, StrictSchema
 
@@ -36,48 +41,128 @@ class VerifierOutput(StrictSchema):
     analyses: list[VerifierAnalysisOutput] = Field(min_length=1)
 
 
+def _validatedAnalyses(
+    output: VerifierOutput,
+    state: VerificationGraphState,
+    inference: GonkaInferenceRecord,
+) -> list[AgentAnalysis]:
+    expectedClaimIds = [claim.claimId for claim in state["claims"]]
+    returnedClaimIds = [analysis.claimId for analysis in output.analyses]
+    validationPaths: list[str] = []
+    if len(returnedClaimIds) != len(set(returnedClaimIds)):
+        validationPaths.append("analyses.claimId.duplicate")
+    if set(returnedClaimIds) != set(expectedClaimIds):
+        validationPaths.append("analyses.claimId.coverage")
+
+    evidenceClaimIds = {
+        evidence.evidenceId: set(evidence.claimIds) for evidence in state["evidence"]
+    }
+    for index, analysis in enumerate(output.analyses):
+        assessmentIds = [item.evidenceId for item in analysis.evidenceAssessments]
+        if len(assessmentIds) != len(set(assessmentIds)):
+            validationPaths.append(f"analyses.{index}.evidenceAssessments.duplicate")
+        citedIds = set(analysis.usedEvidenceIds + analysis.contradictingEvidenceIds)
+        citedIds.update(item.evidenceId for item in analysis.evidenceAssessments)
+        for evidenceId in citedIds:
+            relatedClaimIds = evidenceClaimIds.get(evidenceId)
+            if relatedClaimIds is None:
+                validationPaths.append(f"analyses.{index}.evidenceId.unknown")
+            elif analysis.claimId not in relatedClaimIds:
+                validationPaths.append(f"analyses.{index}.evidenceId.claimMismatch")
+
+    if validationPaths:
+        raise InvalidModelOutputError(
+            "Verifier output failed semantic validation.",
+            reason="semantic_validation",
+            validationPaths=tuple(dict.fromkeys(validationPaths)),
+            outputLength=len(inference.outputText),
+        )
+
+    return [
+        AgentAnalysis(
+            **analysis.model_dump(),
+            modelName=inference.servedModel,
+            gonkaRequestId=inference.requestId,
+        )
+        for analysis in output.analyses
+    ]
+
+
 def createVerifierNode(
     gonkaClient: GonkaClientProtocol,
     *,
     taskName: str,
     modelName: str,
+    stageTimeoutSeconds: float = 180.0,
 ) -> AsyncNode:
     async def verifier(state: VerificationGraphState) -> NodeUpdate:
         inference: GonkaInferenceRecord | None = None
+        inferences: list[GonkaInferenceRecord] = []
+        stageStartedAt = monotonic()
         try:
             contextAnalysis = state.get("contextAnalysis")
-            inference = await gonkaClient.infer(
-                taskName=taskName,
-                model=modelName,
-                systemPrompt=loadPrompt("verification.md"),
-                inputPayload={
-                    "claims": [claim.model_dump(mode="json") for claim in state["claims"]],
-                    "evidence": evidenceForModel(
-                        state["evidence"],
-                        maxExcerptChars=4_000,
+            systemPrompt = localizedPrompt("verification.md", state["outputLanguage"])
+            inputPayload = {
+                "claims": [claim.model_dump(mode="json") for claim in state["claims"]],
+                "evidence": evidenceForModel(
+                    state["evidence"],
+                    maxExcerptChars=2_500,
+                ),
+                "contextAnalysis": contextAnalysis.model_dump(mode="json")
+                if contextAnalysis
+                else None,
+                "outputLanguage": state["outputLanguage"].value,
+            }
+            validationError: InvalidModelOutputError | None = None
+            for validationAttempt in range(2):
+                remainingSeconds = stageTimeoutSeconds - (monotonic() - stageStartedAt)
+                if remainingSeconds <= 0:
+                    raise TimeoutError("Verifier stage deadline exceeded.")
+                currentInference = await asyncio.wait_for(
+                    gonkaClient.infer(
+                        taskName=taskName,
+                        model=modelName,
+                        systemPrompt=systemPrompt
+                        if validationError is None
+                        else structuredOutputRepairPrompt(systemPrompt, validationError),
+                        inputPayload=inputPayload,
+                        applicationRequestId=state.get("requestId"),
+                        outputSchema=VerifierOutput.model_json_schema(),
+                        maxTokens=4096
+                        if validationError is not None and validationError.reason == "max_tokens"
+                        else None,
                     ),
-                    "contextAnalysis": contextAnalysis.model_dump(mode="json")
-                    if contextAnalysis
-                    else None,
-                },
-            )
-            output = parseStructuredOutput(inference.outputText, VerifierOutput)
-            validClaimIds = {claim.claimId for claim in state["claims"]}
-            validEvidenceIds = {evidence.evidenceId for evidence in state["evidence"]}
-            analyses: list[AgentAnalysis] = []
-            for analysis in output.analyses:
-                citedIds = set(analysis.usedEvidenceIds + analysis.contradictingEvidenceIds)
-                citedIds.update(item.evidenceId for item in analysis.evidenceAssessments)
-                if analysis.claimId not in validClaimIds or not citedIds.issubset(validEvidenceIds):
-                    raise ValueError("Verifier cited an unknown claim or evidence ID.")
-                analyses.append(
-                    AgentAnalysis(
-                        **analysis.model_dump(),
-                        modelName=inference.servedModel,
-                        gonkaRequestId=inference.requestId,
-                    )
+                    timeout=remainingSeconds,
                 )
-            return {"agentAnalyses": analyses, **inferenceMetadata(inference)}
+                inference = currentInference
+                inferences.append(currentInference)
+                try:
+                    output = parseStructuredInference(currentInference, VerifierOutput)
+                    analyses = _validatedAnalyses(output, state, currentInference)
+                    break
+                except InvalidModelOutputError as error:
+                    validationError = error
+                    log = logger.info if validationAttempt == 0 else logger.warning
+                    log(
+                        "Verifier output invalid requestId=%s taskName=%s model=%s "
+                        "gonkaRequestId=%s validationAttempt=%s reason=%s "
+                        "validationPaths=%s outputLength=%s willRetry=%s",
+                        state.get("requestId"),
+                        taskName,
+                        currentInference.servedModel,
+                        currentInference.requestId,
+                        validationAttempt + 1,
+                        error.reason,
+                        list(error.validationPaths),
+                        error.outputLength,
+                        validationAttempt == 0,
+                    )
+                    if validationAttempt == 1:
+                        raise
+            else:  # pragma: no cover - loop always breaks or raises
+                raise RuntimeError("Verifier structured-output loop did not finish.")
+
+            return {"agentAnalyses": analyses, **inferenceMetadataFor(inferences)}
         except Exception as error:
             logger.warning(
                 "Verifier failed requestId=%s taskName=%s errorType=%s",
@@ -96,7 +181,9 @@ def createVerifierNode(
                 ],
                 "warnings": [f"{taskName} was unavailable; consensus coverage was reduced."],
             }
-            if inference is not None:
+            if inferences:
+                update.update(inferenceMetadataFor(inferences))
+            elif inference is not None:
                 update.update(inferenceMetadata(inference))
             return update
 

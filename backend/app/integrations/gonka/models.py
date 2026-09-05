@@ -1,11 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class GonkaTextBlock(BaseModel):
+class GonkaContentBlock(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     type: str
     text: str | None = None
+    name: str | None = None
+    input: object | None = None
 
 
 class GonkaResponseUsage(BaseModel):
@@ -20,5 +22,6 @@ class GonkaMessageResponse(BaseModel):
 
     id: str | None = None
     model: str
-    content: list[GonkaTextBlock]
+    content: list[GonkaContentBlock]
+    stop_reason: str | None = None
     usage: GonkaResponseUsage | None = None

@@ -33,6 +33,7 @@ class VerificationService:
             userId=userId,
             originalInput=request.input,
             inputType=request.inputType or InputType.TEXT,
+            outputLanguage=request.outputLanguage,
             analysisInput=request.input,
             sourceDocument=None,
             normalizedText=request.input,

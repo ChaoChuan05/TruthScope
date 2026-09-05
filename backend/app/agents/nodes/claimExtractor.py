@@ -1,17 +1,17 @@
 import logging
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.agents.nodes.common import (
     AsyncNode,
     NodeUpdate,
     inferenceMetadata,
-    loadPrompt,
+    localizedPrompt,
     workflowError,
 )
 from app.agents.state import VerificationGraphState
 from app.integrations.gonka.client import GonkaClientProtocol
-from app.integrations.gonka.mapper import parseStructuredOutput
+from app.integrations.gonka.mapper import parseStructuredInference
 from app.schemas.agentOutput import GonkaInferenceRecord
 from app.schemas.common import StrictSchema
 from app.schemas.verification import Claim
@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 class ClaimExtractionOutput(StrictSchema):
     normalizedText: str = Field(min_length=1, max_length=5000)
     claims: list[Claim] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def claimIdsMustBeUnique(self) -> "ClaimExtractionOutput":
+        claimIds = [claim.claimId for claim in self.claims]
+        if len(claimIds) != len(set(claimIds)):
+            raise ValueError("Extracted claim IDs must be unique.")
+        return self
 
 
 def createClaimExtractionNode(
@@ -34,16 +41,21 @@ def createClaimExtractionNode(
             inference = await gonkaClient.infer(
                 taskName="claimExtraction",
                 model=modelName,
-                systemPrompt=loadPrompt("claimExtraction.md"),
+                systemPrompt=localizedPrompt(
+                    "claimExtraction.md",
+                    state["outputLanguage"],
+                ),
                 inputPayload={
                     "content": state.get("analysisInput", state["originalInput"]),
                     "inputType": state["inputType"].value,
                     "sourceUrl": state["originalInput"]
                     if state["inputType"].value == "url"
                     else None,
+                    "outputLanguage": state["outputLanguage"].value,
                 },
+                applicationRequestId=state.get("requestId"),
             )
-            output = parseStructuredOutput(inference.outputText, ClaimExtractionOutput)
+            output = parseStructuredInference(inference, ClaimExtractionOutput)
             return {
                 "normalizedText": output.normalizedText,
                 "claims": output.claims,

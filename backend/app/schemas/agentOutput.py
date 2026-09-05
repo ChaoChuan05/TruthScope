@@ -17,6 +17,7 @@ class GonkaInferenceRecord(StrictSchema):
     latencyMs: int = Field(ge=0)
     usage: GonkaUsage = Field(default_factory=GonkaUsage)
     fallback: str | None = None
+    stopReason: str | None = None
     outputText: str = Field(default="", exclude=True)
 
 

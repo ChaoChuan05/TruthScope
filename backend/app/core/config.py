@@ -29,13 +29,18 @@ class Settings(BaseSettings):
     GONKA_MAX_RETRIES: int = Field(default=2, ge=0, le=5)
     GONKA_MAX_TOKENS: int = Field(default=2048, ge=1024, le=4096)
     GONKA_PARALLEL_VERIFIERS: bool = False
+    GONKA_REDUCED_CALLS: bool = True
     GONKA_VERIFIER_TIMEOUT_SECONDS: float = Field(default=120.0, gt=0, le=600)
     GONKA_VERIFIER_MAX_RETRIES: int = Field(default=1, ge=0, le=5)
+    GONKA_VERIFIER_STAGE_TIMEOUT_SECONDS: float = Field(default=180.0, gt=0, le=900)
     GONKA_JUDGE_TIMEOUT_SECONDS: float = Field(default=75.0, gt=0, le=600)
     GONKA_JUDGE_MAX_RETRIES: int = Field(default=1, ge=0, le=5)
     GONKA_AUDIT_TIMEOUT_SECONDS: float = Field(default=60.0, gt=0, le=600)
     GONKA_AUDIT_MAX_RETRIES: int = Field(default=1, ge=0, le=5)
-    MAX_EVIDENCE_PER_CLAIM: int = Field(default=12, ge=1, le=50)
+    GONKA_AUDIT_STAGE_TIMEOUT_SECONDS: float = Field(default=120.0, gt=0, le=900)
+    MAX_EVIDENCE_QUERIES_PER_CLAIM: int = Field(default=1, ge=1, le=10)
+    MAX_EVIDENCE_PER_CLAIM: int = Field(default=6, ge=1, le=50)
+    MAX_TOTAL_EVIDENCE: int = Field(default=8, ge=1, le=100)
     MAX_INPUT_CHARS: int = Field(default=5000, ge=100, le=50_000)
     BRAVE_SEARCH_BASE_URL: HttpUrl = HttpUrl("https://api.search.brave.com")
     BRAVE_SEARCH_API_KEY: str | None = None

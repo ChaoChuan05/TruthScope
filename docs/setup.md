@@ -152,13 +152,18 @@ Use backend-only Supabase secret or legacy <code>service_role</code> key for
 | <code>GONKA_MAX_RETRIES</code> | <code>2</code> | Orchestration retries |
 | <code>GONKA_MAX_TOKENS</code> | <code>2048</code> | Maximum output tokens per call |
 | <code>GONKA_PARALLEL_VERIFIERS</code> | <code>false</code> | Concurrent verifier opt-in |
+| <code>GONKA_REDUCED_CALLS</code> | <code>true</code> | Use deterministic planning/context; five normal Gonka tasks |
 | <code>GONKA_VERIFIER_TIMEOUT_SECONDS</code> | <code>120</code> | Verifier timeout |
 | <code>GONKA_VERIFIER_MAX_RETRIES</code> | <code>1</code> | Verifier retries |
+| <code>GONKA_VERIFIER_STAGE_TIMEOUT_SECONDS</code> | <code>180</code> | Total deadline per verifier, including repair/retries |
 | <code>GONKA_JUDGE_TIMEOUT_SECONDS</code> | <code>75</code> | Judge timeout |
 | <code>GONKA_JUDGE_MAX_RETRIES</code> | <code>1</code> | Judge retries |
 | <code>GONKA_AUDIT_TIMEOUT_SECONDS</code> | <code>60</code> | Audit timeout |
 | <code>GONKA_AUDIT_MAX_RETRIES</code> | <code>1</code> | Audit retries |
-| <code>MAX_EVIDENCE_PER_CLAIM</code> | <code>12</code> | Retrieval evidence bound |
+| <code>GONKA_AUDIT_STAGE_TIMEOUT_SECONDS</code> | <code>120</code> | Total audit deadline, including repair/retries |
+| <code>MAX_EVIDENCE_QUERIES_PER_CLAIM</code> | <code>1</code> | Search-query cap per claim |
+| <code>MAX_EVIDENCE_PER_CLAIM</code> | <code>6</code> | Retrieval evidence bound |
+| <code>MAX_TOTAL_EVIDENCE</code> | <code>8</code> | Total evidence records per verification |
 | <code>MAX_INPUT_CHARS</code> | <code>5000</code> | Declared; API schema fixes 5,000 |
 | <code>BRAVE_SEARCH_BASE_URL</code> | Brave API | Search base |
 | <code>BRAVE_SEARCH_API_KEY</code> | empty | Live text evidence search |
@@ -371,6 +376,7 @@ for record in data["inferenceRecords"]:
         "| requested:", record["requestedModel"],
         "| served:", record["servedModel"],
         "| request ID:", record["requestId"],
+        "| stop reason:", record["stopReason"],
     )
 PY
 ~~~
@@ -492,7 +498,11 @@ Send raw text or URL inside valid JSON. Do not send Markdown link such as
 ### <code>status: degraded</code> with <code>VERIFIER_FAILED</code>
 
 Inspect backend logs and response <code>errors</code>. Gonka model may be unavailable, timed out, or
-returned invalid JSON. Backend retries only configured bounded count and preserves partial result.
+returned invalid structured data. Verifier and bias-audit stages prefer schema-constrained tool
+output and attempt one repair. If Gonka rejects a tool request with HTTP 400, the backend retries
+once in plain-JSON mode while keeping the same strict validation. If repair also fails, backend
+preserves successful inference receipts, keeps any successful peer analysis, and returns a
+conservative degraded result.
 
 ### <code>result.json</code> not found
 
@@ -500,8 +510,13 @@ Run curl with <code>-o result.json</code>, then inspect file from same directory
 
 ### Request appears slow
 
-Current endpoint is synchronous. Sequential verifiers, provider timeouts, and bounded retries can
-take several minutes. Frontend progress stages are estimates until response returns.
+The direct curl endpoint is synchronous, while the frontend starts and polls a resumable in-memory
+job. Sequential verifiers, provider timeouts, and bounded retries can still take several minutes.
+Frontend progress stages are estimates until the job completes. Each verifier
+is capped by <code>GONKA_VERIFIER_STAGE_TIMEOUT_SECONDS</code>; bias audit is capped by
+<code>GONKA_AUDIT_STAGE_TIMEOUT_SECONDS</code>. Evidence query and record limits reduce provider
+payload. Keep <code>GONKA_REDUCED_CALLS=true</code> for five normal model tasks instead of seven.
+Lower deadlines carefully if demo latency matters more than slow-provider recovery.
 
 ### History misses records
 

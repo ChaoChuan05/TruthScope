@@ -139,6 +139,7 @@ def buildService(
     responses: dict[str, list[Mapping[str, object] | Exception]] | None = None,
     document: RetrievedDocument | None = None,
     parallelVerifiers: bool = False,
+    reducedGonkaCalls: bool = False,
 ) -> tuple[VerificationService, ScriptedGonkaClient]:
     fakeClient = ScriptedGonkaClient(responses or standardResponses())
     workflow = VerificationWorkflow(
@@ -148,6 +149,7 @@ def buildService(
         orchestratorModel="gonka-orchestrator",
         biasAuditorModel="gonka-auditor",
         parallelVerifiers=parallelVerifiers,
+        reducedGonkaCalls=reducedGonkaCalls,
         modelA="gonka-model-a",
         modelB="gonka-model-b",
         judgeModel="gonka-judge",

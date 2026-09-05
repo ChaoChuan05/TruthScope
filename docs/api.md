@@ -18,7 +18,7 @@ semantics.
 
 ## Authentication
 
-Every verification route requires a Supabase user access token:
+Every verification and topic-suggestion route requires a Supabase user access token:
 
 ~~~http
 Authorization: Bearer <access-token>
@@ -34,11 +34,79 @@ Only health route is public.
 | Method | Path | Auth | Purpose |
 |---|---|---:|---|
 | GET | <code>/health</code> | No | Process and integration configuration health |
+| GET | <code>/trending-topics</code> | Yes | Get cached current Malaysian news topic suggestions |
 | POST | <code>/verifications</code> | Yes | Run and save one verification |
+| POST | <code>/verification-jobs</code> | Yes | Start a resumable verification job |
+| GET | <code>/verification-jobs/{jobId}</code> | Yes | Poll an owner-accessible job |
 | GET | <code>/verifications/{verificationId}</code> | Yes | Read owner-accessible full result |
 | GET | <code>/verifications/{verificationId}/evidence</code> | Yes | Read evidence pack |
 
-## Create verification
+## Current topic suggestions
+
+~~~http
+GET /api/v1/trending-topics
+Authorization: Bearer <access-token>
+~~~
+
+The backend makes one bounded Brave News Search request for recent Malaysia results, converts the
+first three unique headlines into selectable claim suggestions, and shares the result from an
+in-memory cache for 15 minutes. Concurrent requests are coalesced into the same provider call.
+When Brave is unavailable, three safe example claims are returned and cached for five minutes.
+
+~~~json
+{
+  "topics": [
+    {
+      "label": "Malaysia announces a public policy update",
+      "claim": "Malaysia announces a public policy update"
+    }
+  ],
+  "source": "brave_news",
+  "generatedAt": "2026-09-05T02:00:00Z"
+}
+~~~
+
+<code>source</code> is <code>brave_news</code> or <code>fallback</code>. These are current,
+Brave-ranked news suggestions—not an independently measured popularity index and not verified
+claims. The frontend stores the response in <code>sessionStorage</code> under the signed-in user ID,
+so it requests this endpoint once per user per browser-tab session. The Brave key remains only in
+the backend environment.
+
+## Create resumable verification job
+
+This is the recommended browser flow. It returns <code>202 Accepted</code> quickly while the same
+verification service continues in a backend task:
+
+~~~http
+POST /api/v1/verification-jobs
+Content-Type: application/json
+Authorization: Bearer <access-token>
+~~~
+
+The request body is the same <code>VerificationRequest</code> described below. Response:
+
+~~~json
+{
+  "jobId": "uuid",
+  "status": "queued",
+  "result": null,
+  "errorMessage": null,
+  "createdAt": "2026-09-05T02:00:00Z",
+  "startedAt": null,
+  "completedAt": null
+}
+~~~
+
+Poll <code>GET /api/v1/verification-jobs/{jobId}</code>. Status is <code>queued</code>,
+<code>running</code>, <code>complete</code>, or <code>failed</code>. A complete job contains the full
+<code>VerificationResult</code> in <code>result</code>. Both endpoints enforce the authenticated
+owner.
+
+Jobs survive browser refresh and HTTP disconnection, but the registry is in backend process memory.
+Jobs do not survive a backend/container restart and are not shared across multiple workers. A
+durable/shared queue is future production work; no teammate-owned database schema was changed.
+
+## Create verification synchronously
 
 ~~~http
 POST /api/v1/verifications
@@ -51,7 +119,8 @@ Text request:
 ~~~json
 {
   "input": "Malaysia reported a population of 34.1 million in 2024.",
-  "inputType": "text"
+  "inputType": "text",
+  "outputLanguage": "en"
 }
 ~~~
 
@@ -66,6 +135,11 @@ URL request:
 
 <code>inputType</code> may be omitted. Backend infers <code>url</code> when input has URL scheme and
 network location; otherwise it uses <code>text</code>.
+
+<code>outputLanguage</code> may be <code>en</code>, <code>ms</code>, or
+<code>zh-CN</code> and defaults to <code>en</code>. It controls user-facing model prose in existing
+Gonka calls; no translation API call is added. Original claims, quotations, evidence excerpts,
+IDs, URLs, enum values, names, numbers, and units remain unchanged.
 
 Validation:
 
@@ -82,9 +156,9 @@ Frontend currently limits interactive input to 800 characters, while backend con
 
 ### Synchronous behavior
 
-Endpoint runs complete LangGraph workflow and persistence attempt before returning. Provider retries
-can take several minutes. No polling resource, server-sent event, or WebSocket progress stream
-exists.
+This backward-compatible endpoint runs the complete LangGraph workflow and persistence attempt
+before returning. Provider retries can take several minutes. Browser clients should use the job
+endpoints above.
 
 Frontend progress must be labelled estimated until final response arrives. Final
 <code>inferenceRecords</code> provide confirmed task, model, latency, and request metadata.
@@ -102,6 +176,7 @@ Abbreviated example:
   "requestId": "uuid",
   "originalInput": "Malaysia reported a population of 34.1 million in 2024.",
   "inputType": "text",
+  "outputLanguage": "en",
   "normalizedText": "Malaysia's population was estimated at 34.1 million in 2024.",
   "claims": [],
   "evidence": [],
@@ -116,7 +191,7 @@ Abbreviated example:
   "warnings": [],
   "limitations": [],
   "errors": [],
-  "promptVersion": "truthscope-prompts-v2",
+  "promptVersion": "truthscope-prompts-v5",
   "status": "inconclusive",
   "createdAt": "2026-09-04T08:00:00Z",
   "completedAt": "2026-09-04T08:01:00Z"
@@ -221,12 +296,15 @@ than inferred from publisher identity.
     "inputTokens": 1400,
     "outputTokens": 500
   },
-  "fallback": null
+  "fallback": null,
+  "stopReason": "tool_use"
 }
 ~~~
 
 Request ID may be null when provider omits header. Served model may differ when Gonka reports a
-fallback.
+fallback. <code>stopReason</code> may be null; <code>max_tokens</code> means the output was treated
+as truncated and not accepted. A task can have two inference records when its first structured
+output required the single bounded repair attempt.
 
 ### Workflow error shape
 

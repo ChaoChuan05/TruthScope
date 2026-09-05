@@ -7,6 +7,8 @@ const apiBaseUrl = String(
 const oauthRedirectSetting = String(appConfig.OAUTH_REDIRECT_URL || "").trim();
 const supabaseUrl = String(appConfig.SUPABASE_URL || "").replace(/\/$/, "");
 const supabasePublishableKey = String(appConfig.SUPABASE_PUBLISHABLE_KEY || "");
+const i18n = window.TRUTHSCOPE_I18N || {};
+const supportedLanguages = new Set(["en", "ms", "zh-CN"]);
 
 const input = document.getElementById("claimInput");
 const charCount = document.getElementById("charcount");
@@ -41,77 +43,102 @@ const themeToggle = document.getElementById("themeToggle");
 const historyList = document.getElementById("historyList");
 const historyRefresh = document.getElementById("historyRefresh");
 const historyCount = document.getElementById("historyCount");
+const historySearch = document.getElementById("historySearch");
+const historyVerdictFilter = document.getElementById("historyVerdictFilter");
+const historyLoadMore = document.getElementById("historyLoadMore");
+const clearInputButton = document.getElementById("clearInputBtn");
+const inputTypeBadge = document.getElementById("inputTypeBadge");
+const stopWaitingButton = document.getElementById("stopWaitingBtn");
+const evidenceCount = document.getElementById("evidenceCount");
+const claimBreakdown = document.getElementById("claimBreakdown");
+const trendingTopics = document.getElementById("trendingTopics");
+const trendingTopicsLabel = document.getElementById("topicSuggestionsLabel");
+const trendingTopicsStatus = document.getElementById("trendingTopicsStatus");
+const languageSelect = document.getElementById("languageSelect");
 
 const HISTORY_PAGE_SIZE = 500;
+const HISTORY_RENDER_BATCH_SIZE = 25;
+const TRENDING_TOPICS_CACHE_PREFIX = "truthscope-current-topics-v1:";
+const PENDING_VERIFICATION_CACHE_PREFIX = "truthscope-pending-verification-v1:";
+const VERIFICATION_JOB_POLL_INTERVAL_MS = 2500;
 
-const examples = {
-  population: "Malaysia reported a population of 34.1 million in 2024.",
-  fuel: "The Malaysian government will remove every fuel subsidy next month.",
-  quote: "A Member of Parliament said healthcare would be fully privatised.",
+const verdictTranslationKeys = {
+  strongly_supported: "verdictStronglySupported",
+  mostly_supported: "verdictMostlySupported",
+  mixed_or_inconclusive: "verdictMixed",
+  mostly_contradicted: "verdictMostlyContradicted",
+  strongly_contradicted: "verdictStronglyContradicted",
 };
 
-const verdictLabels = {
-  strongly_supported: "STRONGLY SUPPORTED BY EVIDENCE",
-  mostly_supported: "MOSTLY SUPPORTED BY EVIDENCE",
-  mixed_or_inconclusive: "MIXED OR INCONCLUSIVE",
-  mostly_contradicted: "MOSTLY CONTRADICTED BY EVIDENCE",
-  strongly_contradicted: "STRONGLY CONTRADICTED BY EVIDENCE",
+const enumTranslationKeys = {
+  supports: "supported",
+  support: "supported",
+  contradicted: "contradicted",
+  contradicts: "contradicted",
+  neutral: "neutral",
+  unclear: "unclear",
+  mixed_or_inconclusive: "inconclusive",
+  inconclusive: "inconclusive",
+  degraded: "degraded",
+  complete: "complete",
+  failed: "failed",
+  passed: "passed",
+  flagged: "flagged",
+  unavailable: "unavailable",
+  primary: "primary",
+  secondary: "secondary",
+  user_provided: "userProvided",
+  unknown: "unknown",
+  light: "light",
+  dark: "dark",
 };
 
 const pipelineStageDefinitions = [
   {
-    label: "Claim extraction",
-    detail: "Identify atomic, verifiable claims",
+    stageId: "claimExtraction",
+    labelKey: "stageClaimExtraction",
+    detailKey: "stageClaimExtractionDetail",
     startsAt: 0,
     taskNames: ["claimExtraction"],
     errorStages: ["claimExtraction"],
   },
   {
-    label: "Evidence planning",
-    detail: "Build neutral search queries",
+    stageId: "sourceRetrieval",
+    labelKey: "stageSourceRetrieval",
+    detailKey: "stageSourceRetrievalDetail",
     startsAt: 8,
-    taskNames: ["evidencePlanning"],
-    errorStages: ["evidencePlanningAndRetrieval"],
-  },
-  {
-    label: "Source retrieval",
-    detail: "Collect and normalize public evidence",
-    startsAt: 18,
     taskNames: [],
     errorStages: ["evidencePlanningAndRetrieval"],
   },
   {
-    label: "Context analysis",
-    detail: "Check dates, quotations, and missing context",
-    startsAt: 35,
-    taskNames: ["contextAnalysis"],
-    errorStages: ["contextAnalyzer"],
-  },
-  {
-    label: "Verifier A",
-    detail: "Independent evidence assessment",
-    startsAt: 50,
+    stageId: "verifierA",
+    labelKey: "stageVerifierA",
+    detailKey: "stageVerifierADetail",
+    startsAt: 25,
     taskNames: ["verifierModelA"],
     errorStages: ["verifierModelA"],
   },
   {
-    label: "Verifier B",
-    detail: "Second independent assessment",
-    startsAt: 70,
+    stageId: "verifierB",
+    labelKey: "stageVerifierB",
+    detailKey: "stageVerifierBDetail",
+    startsAt: 50,
     taskNames: ["verifierModelB"],
     errorStages: ["verifierModelB"],
   },
   {
-    label: "Consensus judge",
-    detail: "Compare agreements and disagreements",
-    startsAt: 95,
+    stageId: "consensus",
+    labelKey: "stageConsensus",
+    detailKey: "stageConsensusDetail",
+    startsAt: 75,
     taskNames: ["consensusJudge", "consensusRetry"],
     errorStages: ["consensusJudge", "consensusRetry"],
   },
   {
-    label: "Bias audit",
-    detail: "Check decision language for neutrality indicators",
-    startsAt: 115,
+    stageId: "biasAudit",
+    labelKey: "stageBiasAudit",
+    detailKey: "stageBiasAuditDetail",
+    startsAt: 95,
     taskNames: ["biasAudit", "biasAuditRetry"],
     errorStages: ["biasAudit", "biasAuditRetry"],
   },
@@ -126,6 +153,95 @@ let lastEstimatedStageIndex = -1;
 let scoreAnimationFrame = null;
 let historyUserId = null;
 let historyLoadGeneration = 0;
+let historyRows = [];
+let historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
+let activeHistoryId = null;
+let activeVerificationController = null;
+let pendingVerificationUserId = null;
+let trendingTopicsUserId = null;
+let trendingTopicsLoadGeneration = 0;
+let selectedLanguage = "en";
+let lastRenderedResult = null;
+let currentTrendingTopics = [];
+let currentTrendingSource = "fallback";
+
+function t(key, replacements = {}) {
+  const languageMessages = i18n.messages?.[selectedLanguage] || i18n.messages?.en || {};
+  const fallbackMessages = i18n.messages?.en || {};
+  let value = languageMessages[key] ?? fallbackMessages[key] ?? key;
+  Object.entries(replacements).forEach(([name, replacement]) => {
+    value = String(value).replaceAll(`{${name}}`, String(replacement));
+  });
+  return String(value);
+}
+
+function defaultTrendingTopics() {
+  return [
+    { label: t("topicPopulationLabel"), claim: t("topicPopulationClaim") },
+    { label: t("topicSubsidyLabel"), claim: t("topicSubsidyClaim") },
+    { label: t("topicParliamentLabel"), claim: t("topicParliamentClaim") },
+  ];
+}
+
+function verdictLabel(verdict) {
+  const translationKey = verdictTranslationKeys[String(verdict || "")];
+  return translationKey ? t(translationKey) : humanize(verdict);
+}
+
+function applyLanguage(language, { persist = true } = {}) {
+  selectedLanguage = supportedLanguages.has(language) ? language : "en";
+  const languageDefinition = i18n.languages?.[selectedLanguage] || {};
+  document.documentElement.lang = languageDefinition.htmlLang || selectedLanguage;
+  document.title = t("documentTitle");
+  languageSelect.value = selectedLanguage;
+
+  document.querySelectorAll("[data-i18n]").forEach((element) => {
+    element.textContent = t(element.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-html]").forEach((element) => {
+    element.innerHTML = t(element.dataset.i18nHtml);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+    element.setAttribute("placeholder", t(element.dataset.i18nPlaceholder));
+  });
+  document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
+    element.setAttribute("aria-label", t(element.dataset.i18nAriaLabel));
+  });
+
+  if (persist) {
+    try {
+      localStorage.setItem("truthscope-language", selectedLanguage);
+    } catch {
+      // Language remains active when browser storage is blocked.
+    }
+  }
+
+  applyTheme(document.documentElement.dataset.theme);
+  updateInputUi();
+  renderTrendingTopics(currentTrendingTopics, currentTrendingSource);
+  if (historyRows.length) renderHistoryRows();
+  if (lastRenderedResult) renderResult(lastRenderedResult);
+  if (!verificationLoading.hidden) {
+    if (pipelineTimer !== null) {
+      pipelineTitle.textContent = t("pipelineWorking");
+      lastEstimatedStageIndex = -1;
+      updatePipelineClock();
+    } else if (lastRenderedResult) {
+      finishPipeline(lastRenderedResult);
+    }
+  }
+  if (activeVerificationController) checkLabel.textContent = t("analyzing");
+}
+
+function initializeLanguage() {
+  let savedLanguage = "en";
+  try {
+    savedLanguage = localStorage.getItem("truthscope-language") || "en";
+  } catch {
+    // English remains the default when browser storage is blocked.
+  }
+  applyLanguage(savedLanguage, { persist: false });
+}
 
 function createElement(tagName, className, text) {
   const element = document.createElement(tagName);
@@ -138,8 +254,151 @@ function replaceChildren(element, children = []) {
   element.replaceChildren(...children);
 }
 
+function normalizeTrendingTopics(value) {
+  if (!Array.isArray(value)) return [];
+  const normalizedTopics = [];
+  const seenClaims = new Set();
+  for (const item of value) {
+    const label = String(item?.label || "").trim().slice(0, 72);
+    const claim = String(item?.claim || "").trim().slice(0, 500);
+    const claimKey = claim.toLocaleLowerCase("en-MY");
+    if (!label || !claim || seenClaims.has(claimKey)) continue;
+    normalizedTopics.push({ label, claim });
+    seenClaims.add(claimKey);
+    if (normalizedTopics.length === 3) break;
+  }
+  return normalizedTopics;
+}
+
+function renderTrendingTopics(topics, source = "fallback") {
+  const normalizedTopics = normalizeTrendingTopics(topics);
+  currentTrendingTopics = normalizedTopics;
+  currentTrendingSource = source;
+  const selectedTopics = normalizedTopics.length ? normalizedTopics : defaultTrendingTopics();
+  const buttons = selectedTopics.map((topic) => {
+    const button = createElement("button", "chip", topic.label);
+    button.type = "button";
+    button.title = t("useClaim", { claim: topic.claim });
+    button.addEventListener("click", () => {
+      input.value = topic.claim;
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+    });
+    return button;
+  });
+  replaceChildren(trendingTopics, buttons);
+  const usesBrave = source === "brave_news";
+  trendingTopicsLabel.textContent = t(usesBrave ? "currentTopics" : "tryExample");
+  trendingTopicsStatus.textContent = usesBrave
+    ? t("topicsLoaded")
+    : t("examplesAvailable");
+}
+
+function trendingTopicsCacheKey(userId) {
+  return `${TRENDING_TOPICS_CACHE_PREFIX}${encodeURIComponent(String(userId))}`;
+}
+
+function pendingVerificationCacheKey(userId) {
+  return `${PENDING_VERIFICATION_CACHE_PREFIX}${encodeURIComponent(String(userId))}`;
+}
+
+function readPendingVerification(userId) {
+  try {
+    const rawValue = localStorage.getItem(pendingVerificationCacheKey(userId));
+    if (!rawValue) return null;
+    const pending = JSON.parse(rawValue);
+    const jobId = String(pending?.jobId || "").trim();
+    const startedAt = Number(pending?.startedAt);
+    if (!jobId || !Number.isFinite(startedAt)) return null;
+    return {
+      jobId,
+      startedAt,
+      outputLanguage: supportedLanguages.has(pending?.outputLanguage)
+        ? pending.outputLanguage
+        : "en",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePendingVerification(userId, pending) {
+  try {
+    localStorage.setItem(pendingVerificationCacheKey(userId), JSON.stringify(pending));
+  } catch {
+    // The request still runs, but refresh recovery is unavailable when storage is blocked.
+  }
+}
+
+function clearPendingVerification(userId) {
+  try {
+    localStorage.removeItem(pendingVerificationCacheKey(userId));
+  } catch {
+    // Ignore blocked storage; the completed job is harmless if discovered again.
+  }
+}
+
+function readTrendingTopicsCache(userId) {
+  try {
+    const cachedValue = sessionStorage.getItem(trendingTopicsCacheKey(userId));
+    if (!cachedValue) return null;
+    const cached = JSON.parse(cachedValue);
+    const topics = normalizeTrendingTopics(cached?.topics);
+    if (!topics.length) return null;
+    return {
+      topics,
+      source: cached?.source === "brave_news" ? "brave_news" : "fallback",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTrendingTopicsCache(userId, value) {
+  try {
+    sessionStorage.setItem(
+      trendingTopicsCacheKey(userId),
+      JSON.stringify({ topics: value.topics, source: value.source }),
+    );
+  } catch {
+    // In-memory user tracking still prevents duplicate requests until this page reloads.
+  }
+}
+
+async function loadTrendingTopics(userId) {
+  const cached = readTrendingTopicsCache(userId);
+  if (cached) {
+    renderTrendingTopics(cached.topics, cached.source);
+    return;
+  }
+
+  const loadGeneration = ++trendingTopicsLoadGeneration;
+  let result = { topics: defaultTrendingTopics(), source: "fallback" };
+  try {
+    const response = await apiRequest("/trending-topics");
+    const topics = normalizeTrendingTopics(response?.topics);
+    if (topics.length) {
+      result = {
+        topics,
+        source: response?.source === "brave_news" ? "brave_news" : "fallback",
+      };
+    }
+  } catch {
+    // Suggestions are non-critical; cache the safe examples and keep verification available.
+  }
+  writeTrendingTopicsCache(userId, result);
+  if (
+    loadGeneration === trendingTopicsLoadGeneration &&
+    currentSession?.user?.id === userId
+  ) {
+    renderTrendingTopics(result.topics, result.source);
+  }
+}
+
 function humanize(value) {
-  if (!value) return "Unavailable";
+  if (!value) return t("unavailable");
+  const translationKey = enumTranslationKeys[String(value).toLowerCase()];
+  if (translationKey) return t(translationKey);
   return String(value)
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -151,10 +410,11 @@ function formatModelPercent(value) {
 }
 
 function formatDate(value) {
-  if (!value) return "Date unavailable";
+  if (!value) return t("dateUnavailable");
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Date unavailable";
-  return new Intl.DateTimeFormat("en-MY", {
+  if (Number.isNaN(date.getTime())) return t("dateUnavailable");
+  const locale = i18n.languages?.[selectedLanguage]?.locale || "en-MY";
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Kuala_Lumpur",
@@ -170,17 +430,32 @@ function safeHttpUrl(value) {
   }
 }
 
+function inputType(value) {
+  const normalizedValue = String(value || "").trim();
+  return normalizedValue && safeHttpUrl(normalizedValue) ? "url" : "text";
+}
+
+function updateInputUi() {
+  const hasInput = Boolean(input.value.trim());
+  const requestRunning = activeVerificationController !== null;
+  charCount.textContent = `${input.value.length} / ${input.maxLength}`;
+  inputTypeBadge.textContent = t(inputType(input.value) === "url" ? "publicUrl" : "textClaim");
+  inputTypeBadge.className = `input-type-badge ${inputType(input.value)}`;
+  clearInputButton.disabled = !hasInput || requestRunning;
+  checkButton.disabled = !hasInput || requestRunning;
+}
+
 function oauthRedirectUrl() {
   const currentPage = `${window.location.origin}${window.location.pathname}`;
   const redirectUrl = safeHttpUrl(oauthRedirectSetting || currentPage);
   if (!redirectUrl) {
-    throw new Error("Open TruthScope through its local HTTP server before using Google login.");
+    throw new Error(t("localServerRequired"));
   }
   return redirectUrl;
 }
 
 function shortRequestId(value) {
-  if (!value) return "Request ID unavailable";
+  if (!value) return t("requestIdUnavailable");
   const requestId = String(value);
   return requestId.length > 28
     ? `${requestId.slice(0, 14)}…${requestId.slice(-8)}`
@@ -189,10 +464,10 @@ function shortRequestId(value) {
 
 function confidenceLevel(value) {
   const confidence = Number(value);
-  if (!Number.isFinite(confidence)) return "UNAVAILABLE";
-  if (confidence >= 0.75) return "HIGH";
-  if (confidence >= 0.45) return "MEDIUM";
-  return "LOW";
+  if (!Number.isFinite(confidence)) return t("unavailable").toUpperCase();
+  if (confidence >= 0.75) return t("high");
+  if (confidence >= 0.45) return t("medium");
+  return t("low");
 }
 
 function findingClass(value) {
@@ -247,8 +522,8 @@ function pipelineStepElement(stage, status, statusText, metadata = "") {
   marker.setAttribute("aria-hidden", "true");
   const content = createElement("div", "pipeline-step-content");
   content.append(
-    createElement("div", "pipeline-step-name", stage.label),
-    createElement("div", "pipeline-step-detail", stage.detail),
+    createElement("div", "pipeline-step-name", t(stage.labelKey)),
+    createElement("div", "pipeline-step-detail", t(stage.detailKey)),
   );
   const state = createElement("div", "pipeline-step-state", statusText);
   if (metadata) state.append(createElement("span", "pipeline-step-meta", metadata));
@@ -267,21 +542,23 @@ function renderEstimatedPipeline(elapsedSeconds) {
   lastEstimatedStageIndex = activeIndex;
   const rows = pipelineStageDefinitions.map((stage, index) => {
     if (index < activeIndex) {
-      return pipelineStepElement(stage, "estimated", "Earlier stage · estimated");
+      return pipelineStepElement(stage, "estimated", t("earlierEstimated"));
     }
     if (index === activeIndex) {
-      return pipelineStepElement(stage, "active", "Likely active");
+      return pipelineStepElement(stage, "active", t("likelyActive"));
     }
-    return pipelineStepElement(stage, "queued", "Queued");
+    return pipelineStepElement(stage, "queued", t("queued"));
   });
   replaceChildren(pipelineSteps, rows);
-  loadingStatus.textContent = `Estimated stage: ${pipelineStageDefinitions[activeIndex].label}`;
+  loadingStatus.textContent = t("estimatedStage", {
+    stage: t(pipelineStageDefinitions[activeIndex].labelKey),
+  });
 }
 
 function updatePipelineClock() {
   if (pipelineStartedAt === null) return;
-  const elapsedMilliseconds = performance.now() - pipelineStartedAt;
-  pipelineElapsed.textContent = `Worked for ${formatElapsed(elapsedMilliseconds)}`;
+  const elapsedMilliseconds = Date.now() - pipelineStartedAt;
+  pipelineElapsed.textContent = t("workedFor", { time: formatElapsed(elapsedMilliseconds) });
   renderEstimatedPipeline(elapsedMilliseconds / 1000);
 }
 
@@ -290,16 +567,18 @@ function stopPipelineClock() {
   pipelineTimer = null;
 }
 
-function startPipeline() {
+function startPipeline(startedAt = Date.now()) {
   stopPipelineClock();
-  pipelineStartedAt = performance.now();
+  pipelineStartedAt = Number.isFinite(Number(startedAt)) ? Number(startedAt) : Date.now();
   lastEstimatedStageIndex = -1;
-  pipelineTitle.textContent = "Agent pipeline working";
+  pipelineTitle.textContent = t("pipelineWorking");
   pipelineDetails.hidden = false;
-  pipelineToggle.textContent = "Hide details";
+  pipelineToggle.textContent = t("hideDetails");
   pipelineToggle.setAttribute("aria-expanded", "true");
   verificationLoading.className = "verification-loading running";
   verificationLoading.hidden = false;
+  stopWaitingButton.hidden = false;
+  stopWaitingButton.disabled = false;
   updatePipelineClock();
   pipelineTimer = window.setInterval(updatePipelineClock, 1000);
 }
@@ -312,18 +591,19 @@ function finishPipeline(data) {
   stopPipelineClock();
   lastEstimatedStageIndex = -1;
   const elapsedMilliseconds =
-    pipelineStartedAt === null ? 0 : performance.now() - pipelineStartedAt;
-  pipelineElapsed.textContent = `Worked for ${formatElapsed(elapsedMilliseconds)}`;
+    pipelineStartedAt === null ? 0 : Date.now() - pipelineStartedAt;
+  pipelineElapsed.textContent = t("workedFor", { time: formatElapsed(elapsedMilliseconds) });
   if (data.status === "failed") {
-    pipelineTitle.textContent = "Agent pipeline failed";
+    pipelineTitle.textContent = t("pipelineFailed");
   } else if (data.status === "degraded") {
-    pipelineTitle.textContent = "Agent pipeline finished with limitations";
+    pipelineTitle.textContent = t("pipelineLimited");
   } else {
-    pipelineTitle.textContent = "Agent pipeline completed";
+    pipelineTitle.textContent = t("pipelineCompleted");
   }
   verificationLoading.className = `verification-loading ${data.status || "complete"}`;
-  loadingStatus.textContent = `Backend status: ${humanize(data.status)}`;
+  loadingStatus.textContent = t("backendStatus", { status: humanize(data.status) });
   pipelineProgress.style.width = "100%";
+  stopWaitingButton.hidden = true;
 
   const records = Array.isArray(data.inferenceRecords) ? data.inferenceRecords : [];
   const errors = Array.isArray(data.errors) ? data.errors : [];
@@ -337,22 +617,23 @@ function finishPipeline(data) {
       const metadata = [record.servedModel, latency, shortRequestId(record.requestId)]
         .filter(Boolean)
         .join(" · ");
-      return pipelineStepElement(stage, "confirmed", "Confirmed", metadata);
+      return pipelineStepElement(stage, "confirmed", t("confirmed"), metadata);
     }
     const retrievalFinished =
-      stage.label === "Source retrieval" &&
+      stage.stageId === "sourceRetrieval" &&
       Array.isArray(data.evidence) &&
-      records.some((item) => item.taskName === "evidencePlanning");
+      Array.isArray(data.claims) &&
+      data.claims.length > 0;
     if (retrievalFinished && !error) {
       return pipelineStepElement(
         stage,
         "confirmed",
-        "Confirmed",
-        `${data.evidence.length} evidence record${data.evidence.length === 1 ? "" : "s"}`,
+        t("confirmed"),
+        t("evidenceRecords", { count: data.evidence.length }),
       );
     }
-    if (error) return pipelineStepElement(stage, "failed", "Unavailable", error.message);
-    return pipelineStepElement(stage, "skipped", "Skipped");
+    if (error) return pipelineStepElement(stage, "failed", t("unavailable"), error.message);
+    return pipelineStepElement(stage, "skipped", t("skipped"));
   });
   replaceChildren(pipelineSteps, rows);
 }
@@ -361,12 +642,13 @@ function failPipeline(message) {
   stopPipelineClock();
   lastEstimatedStageIndex = -1;
   const elapsedMilliseconds =
-    pipelineStartedAt === null ? 0 : performance.now() - pipelineStartedAt;
-  pipelineElapsed.textContent = `Worked for ${formatElapsed(elapsedMilliseconds)}`;
-  pipelineTitle.textContent = "Agent pipeline request failed";
-  loadingStatus.textContent = message || "Verification request failed.";
+    pipelineStartedAt === null ? 0 : Date.now() - pipelineStartedAt;
+  pipelineElapsed.textContent = t("workedFor", { time: formatElapsed(elapsedMilliseconds) });
+  pipelineTitle.textContent = t("pipelineRequestFailed");
+  loadingStatus.textContent = message || t("requestFailed");
   verificationLoading.className = "verification-loading failed";
   pipelineProgress.style.width = "100%";
+  stopWaitingButton.hidden = true;
 }
 
 function extractErrorMessage(responseBody, fallback) {
@@ -404,6 +686,9 @@ function closeLogin() {
 }
 
 function clearPrivateUi() {
+  if (activeVerificationController) activeVerificationController.abort();
+  activeVerificationController = null;
+  pendingVerificationUserId = null;
   stopPipelineClock();
   pipelineStartedAt = null;
   verificationLoading.hidden = true;
@@ -413,9 +698,16 @@ function clearPrivateUi() {
   replaceChildren(document.getElementById("analysisTrace"));
   replaceChildren(document.getElementById("evidenceList"));
   replaceChildren(document.getElementById("disagreementList"));
+  replaceChildren(claimBreakdown);
   replaceChildren(historyList);
-  historyCount.textContent = "0 records";
+  historyRows = [];
+  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
+  activeHistoryId = null;
+  lastRenderedResult = null;
+  historyLoadMore.hidden = true;
+  historyCount.textContent = t("records", { count: 0 });
   setVerificationMessage("");
+  updateInputUi();
 }
 
 async function loadUserProfile(user) {
@@ -454,22 +746,30 @@ function updateAuthUi(session) {
 
   if (!signedIn) {
     historyUserId = null;
+    trendingTopicsUserId = null;
+    trendingTopicsLoadGeneration += 1;
+    renderTrendingTopics([], "fallback");
     clearPrivateUi();
     return;
   }
 
   void loadUserProfile(currentSession.user);
+  if (trendingTopicsUserId !== currentSession.user.id) {
+    trendingTopicsUserId = currentSession.user.id;
+    void loadTrendingTopics(currentSession.user.id);
+  }
   if (historyUserId !== currentSession.user.id) {
     historyUserId = currentSession.user.id;
     void loadHistory();
   }
+  void resumePendingVerification(currentSession.user.id);
   closeLogin();
 }
 
 async function getSession() {
-  if (!supabaseClient) throw new Error("Supabase login is not configured.");
+  if (!supabaseClient) throw new Error(t("authMissing"));
   const { data, error } = await supabaseClient.auth.getSession();
-  if (error || !data.session) throw new Error("Please sign in before verifying a claim.");
+  if (error || !data.session) throw new Error(t("sessionExpired"));
   currentSession = data.session;
   return data.session;
 }
@@ -499,20 +799,116 @@ async function apiRequest(path, options = {}, retryAfterRefresh = true) {
   if (!response.ok) {
     if (response.status === 401) {
       await supabaseClient.auth.signOut({ scope: "local" });
-      throw new Error("Session expired. Sign in again.");
+      throw new Error(t("sessionExpired"));
     }
-    throw new Error(
+    const requestError = new Error(
       extractErrorMessage(responseBody, `Verification request failed with HTTP ${response.status}.`),
     );
+    requestError.status = response.status;
+    throw requestError;
   }
   return responseBody;
+}
+
+function waitForJobPoll(signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Polling aborted", "AbortError"));
+      return;
+    }
+    let timeoutId = null;
+    const onAbort = () => {
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      reject(new DOMException("Polling aborted", "AbortError"));
+    };
+    timeoutId = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, VERIFICATION_JOB_POLL_INTERVAL_MS);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function waitForVerificationJob(jobId, controller) {
+  while (!controller.signal.aborted) {
+    const job = await apiRequest(
+      `/verification-jobs/${encodeURIComponent(jobId)}`,
+      { signal: controller.signal },
+    );
+    if (job?.status === "complete" && job.result) return job.result;
+    if (job?.status === "failed") {
+      const jobError = new Error(job.errorMessage || t("requestFailed"));
+      jobError.terminal = true;
+      throw jobError;
+    }
+    await waitForJobPoll(controller.signal);
+  }
+  throw new DOMException("Polling aborted", "AbortError");
+}
+
+async function showVerificationResult(data) {
+  finishPipeline(data);
+  renderResult(data);
+  if (data.status === "degraded") {
+    setVerificationMessage(t("verificationDegraded"), "warning");
+  } else if (data.status === "failed") {
+    setVerificationMessage(t("verificationFailed"));
+  } else {
+    setVerificationMessage(t("verificationComplete"), "success");
+  }
+  await loadHistory();
+  results.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function resumePendingVerification(userId) {
+  if (activeVerificationController || pendingVerificationUserId === userId) return;
+  const pending = readPendingVerification(userId);
+  if (!pending) return;
+
+  const controller = new AbortController();
+  pendingVerificationUserId = userId;
+  activeVerificationController = controller;
+  updateInputUi();
+  checkButton.setAttribute("aria-busy", "true");
+  checkLabel.textContent = t("analyzing");
+  results.hidden = true;
+  results.classList.remove("show");
+  setVerificationMessage("");
+  startPipeline(pending.startedAt);
+
+  try {
+    const data = await waitForVerificationJob(pending.jobId, controller);
+    clearPendingVerification(userId);
+    if (activeVerificationController === controller) activeVerificationController = null;
+    await showVerificationResult(data);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      const message = t("stoppedWaiting");
+      failPipeline(message);
+      setVerificationMessage(message, "warning");
+    } else {
+      if (error.terminal || [403, 404].includes(error.status)) {
+        clearPendingVerification(userId);
+      }
+      const message = error.message || t("requestFailed");
+      failPipeline(message);
+      setVerificationMessage(message);
+      await loadHistory();
+    }
+  } finally {
+    if (activeVerificationController === controller) activeVerificationController = null;
+    if (pendingVerificationUserId === userId) pendingVerificationUserId = null;
+    checkLabel.textContent = t("runVerification");
+    checkButton.removeAttribute("aria-busy");
+    updateInputUi();
+  }
 }
 
 function renderClaims(claims) {
   const container = document.getElementById("claimText");
   const claimItems = Array.isArray(claims) ? claims : [];
   if (!claimItems.length) {
-    replaceChildren(container, [createElement("p", "claim-item", "No atomic claim extracted.")]);
+    replaceChildren(container, [createElement("p", "claim-item", t("noClaim"))]);
     return;
   }
   replaceChildren(
@@ -532,15 +928,15 @@ function renderModelCard({ label, provider, confidence, finding, requestId, summ
   const card = createElement("article", `model-card ${tone}`);
   card.append(
     createElement("div", "model-name", label),
-    createElement("div", "model-provider", `${provider || "Model unavailable"} · via Gonka Router`),
+    createElement("div", "model-provider", `${provider || t("modelUnavailable")} · ${t("viaGonka")}`),
   );
   const score = createElement("div", "model-score");
   score.append(document.createTextNode(formatModelPercent(confidence)), createElement("span", "", "%"));
   card.append(
     score,
-    createElement("div", "model-conf", `CONFIDENCE — ${confidenceLevel(confidence)}`),
+    createElement("div", "model-conf", `${t("confidence").toUpperCase()} — ${confidenceLevel(confidence)}`),
     createElement("div", `model-tag ${tone}`, humanize(finding)),
-    createElement("p", "model-summary", summary || "Analysis summary unavailable."),
+    createElement("p", "model-summary", summary || t("analysisUnavailable")),
   );
   const request = createElement("div", "model-reqid", shortRequestId(requestId));
   if (requestId) request.title = String(requestId);
@@ -552,7 +948,7 @@ function renderModels(data) {
   const analyses = Array.isArray(data.agentAnalyses) ? data.agentAnalyses : [];
   const cards = analyses.map((analysis, index) =>
     renderModelCard({
-      label: `Verifier ${String.fromCharCode(65 + index)}`,
+      label: t("verifier", { name: String.fromCharCode(65 + index) }),
       provider: analysis.modelName,
       confidence: analysis.confidence,
       finding: analysis.stance,
@@ -566,7 +962,7 @@ function renderModels(data) {
     );
     cards.push(
       renderModelCard({
-        label: "Consensus Judge",
+        label: t("consensusJudge"),
         provider: judgeRecord?.servedModel || judgeRecord?.requestedModel,
         confidence: data.judgeResult.confidence,
         finding: data.judgeResult.verdict,
@@ -575,7 +971,7 @@ function renderModels(data) {
       }),
     );
   }
-  if (!cards.length) cards.push(createElement("div", "empty-state", "No valid model analysis was returned."));
+  if (!cards.length) cards.push(createElement("div", "empty-state", t("noModel")));
   replaceChildren(document.getElementById("modelGrid"), cards);
 }
 
@@ -586,11 +982,13 @@ function inferenceRequestId(data, taskNames) {
 function traceStep(index, label, title, body, requestId) {
   const step = createElement("article", "trace-step");
   step.append(
-    createElement("div", "t-idx", `Step ${index} — ${label}`),
+    createElement("div", "t-idx", t("step", { index, label })),
     createElement("div", "t-title", title),
-    createElement("div", "t-body", body || "Summary unavailable."),
+    createElement("div", "t-body", body || t("summaryUnavailable")),
   );
-  const request = createElement("div", "t-req", `Request ID: ${shortRequestId(requestId)}`);
+  const request = createElement("div", "t-req", t("requestId", {
+    id: shortRequestId(requestId),
+  }));
   if (requestId) request.title = String(requestId);
   step.append(request);
   return step;
@@ -601,10 +999,10 @@ function renderAnalysisTrace(data) {
   const steps = [
     traceStep(
       1,
-      "Claim extraction",
-      `${claims.length} atomic claim${claims.length === 1 ? "" : "s"} identified`,
+      t("stageClaimExtraction"),
+      t("atomicClaims", { count: claims.length }),
       claims.map((claim) => claim.normalizedText || claim.originalText).join(" ") ||
-        "Claim extraction did not complete.",
+        t("extractionFailed"),
       inferenceRequestId(data, ["claimExtraction"]),
     ),
   ];
@@ -612,7 +1010,7 @@ function renderAnalysisTrace(data) {
     steps.push(
       traceStep(
         steps.length + 1,
-        `Verifier ${String.fromCharCode(65 + index)}`,
+        t("verifier", { name: String.fromCharCode(65 + index) }),
         `${humanize(analysis.stance)} · ${analysis.modelName}`,
         analysis.reasoningSummary,
         analysis.gonkaRequestId,
@@ -623,8 +1021,8 @@ function renderAnalysisTrace(data) {
     steps.push(
       traceStep(
         steps.length + 1,
-        "Consensus",
-        verdictLabels[data.judgeResult.verdict] || humanize(data.judgeResult.verdict),
+        t("consensus"),
+        verdictLabel(data.judgeResult.verdict),
         data.judgeResult.reasoningSummary,
         data.judgeResult.gonkaRequestId || inferenceRequestId(data, ["consensusRetry", "consensusJudge"]),
       ),
@@ -634,8 +1032,8 @@ function renderAnalysisTrace(data) {
     steps.push(
       traceStep(
         steps.length + 1,
-        "Bias audit",
-        `Audit ${humanize(data.biasAudit.status)}`,
+        t("biasAudit"),
+        t("auditStatus", { status: humanize(data.biasAudit.status) }),
         data.biasAudit.reasoningSummary,
         data.biasAudit.gonkaRequestId || inferenceRequestId(data, ["biasAuditRetry", "biasAudit"]),
       ),
@@ -644,41 +1042,197 @@ function renderAnalysisTrace(data) {
   replaceChildren(document.getElementById("analysisTrace"), steps);
 }
 
+function assessedEvidenceStance(data, record) {
+  const assessments = (data.agentAnalyses || []).flatMap((analysis) =>
+    (analysis.evidenceAssessments || []).filter(
+      (assessment) => assessment.evidenceId === record.evidenceId,
+    ),
+  );
+  const support = assessments.filter((item) => item.stance === "supports").length;
+  const contradict = assessments.filter((item) => item.stance === "contradicts").length;
+  if (support > contradict) return "supports";
+  if (contradict > support) return "contradicts";
+  if (assessments.some((item) => item.stance === "neutral")) return "neutral";
+  return record.stance || "unclear";
+}
+
+function evidenceQualityPercent(record) {
+  const quality = record.quality || {};
+  const values = [
+    quality.provenance,
+    quality.directness,
+    quality.dateRelevance,
+    quality.contextCompleteness,
+    quality.corroboration,
+  ].map(Number);
+  if (!values.every(Number.isFinite)) return null;
+  return Math.round((values.reduce((total, value) => total + value, 0) / 25) * 100);
+}
+
+function evidenceItem(data, record, index, stance) {
+  const item = createElement("article", `evidence-item ${findingClass(stance)}`);
+  const body = createElement("div", "evidence-body");
+  const sourceUrl = safeHttpUrl(record.source?.url);
+  const title = sourceUrl
+    ? createElement("a", "e-title", record.source?.title || sourceUrl)
+    : createElement("div", "e-title", record.source?.title || t("untitledSource"));
+  if (sourceUrl) {
+    title.href = sourceUrl;
+    title.target = "_blank";
+    title.rel = "noopener noreferrer";
+    title.append(createElement("span", "external-icon", "↗"));
+    title.append(createElement("span", "sr-only", t("opensTab")));
+  }
+
+  const sourceType = humanize(record.source?.sourceType || "unknown");
+  const quality = evidenceQualityPercent(record);
+  const badges = createElement("div", "evidence-badges");
+  badges.append(
+    createElement("span", `stance-badge ${findingClass(stance)}`, humanize(stance)),
+    createElement("span", "source-type-badge", sourceType),
+  );
+  if (quality !== null) {
+    const qualityBadge = createElement("span", "quality-badge", t("evidenceQuality", { quality }));
+    qualityBadge.title = t("evidenceQualityHelp");
+    badges.append(qualityBadge);
+  }
+
+  const claimIndexes = (record.claimIds || [])
+    .map((claimId) => (data.claims || []).findIndex((claim) => claim.claimId === claimId))
+    .filter((claimIndex) => claimIndex >= 0)
+    .map((claimIndex) => claimIndex + 1);
+  const meta = [
+    record.source?.publisher,
+    record.source?.publicationDate
+      ? t("published", { date: formatDate(record.source.publicationDate) })
+      : t("publicationUnavailable"),
+    claimIndexes.length ? t("claim", { number: claimIndexes.join(", ") }) : null,
+  ].filter(Boolean);
+  body.append(badges, title, createElement("div", "e-date", meta.join(" · ")));
+
+  if (record.excerpt) {
+    const details = createElement("details", "evidence-details");
+    details.append(
+      createElement("summary", "", t("readExcerpt")),
+      createElement("p", "", record.excerpt),
+    );
+    body.append(details);
+  }
+  if (record.limitations?.length) {
+    const limitations = createElement("details", "evidence-details evidence-limitations");
+    const list = createElement("ul", "");
+    record.limitations.forEach((limitation) => list.append(createElement("li", "", limitation)));
+    limitations.append(createElement("summary", "", t("sourceLimitations")), list);
+    body.append(limitations);
+  }
+  item.append(createElement("div", "evidence-num", String(index + 1).padStart(2, "0")), body);
+  return item;
+}
+
 function renderEvidence(data) {
   const evidence = Array.isArray(data.evidence) ? data.evidence : [];
+  evidenceCount.textContent = t("sources", { count: evidence.length });
   if (!evidence.length) {
-    replaceChildren(document.getElementById("evidenceList"), [createElement("div", "empty-state", "No evidence was retrieved.")]);
+    replaceChildren(document.getElementById("evidenceList"), [
+      createElement("div", "empty-state", t("noEvidence")),
+    ]);
     return;
   }
-  const items = evidence.map((record, index) => {
-    const item = createElement("article", "evidence-item");
-    const body = createElement("div", "evidence-body");
-    const sourceUrl = safeHttpUrl(record.source?.url);
-    const title = sourceUrl
-      ? createElement("a", "e-title", record.source?.title || sourceUrl)
-      : createElement("div", "e-title", record.source?.title || "Untitled source");
-    if (sourceUrl) {
-      title.href = sourceUrl;
-      title.target = "_blank";
-      title.rel = "noopener noreferrer";
-    }
-    const meta = [
-      record.source?.publisher,
-      record.source?.publicationDate
-        ? `Published ${formatDate(record.source.publicationDate)}`
-        : "Publication date unavailable",
-      humanize(record.stance),
-    ].filter(Boolean);
-    body.append(title, createElement("div", "e-date", meta.join(" · ")));
-    if (record.excerpt) {
-      const details = createElement("details", "evidence-details");
-      details.append(createElement("summary", "", "View relevant excerpt"), createElement("p", "", record.excerpt));
-      body.append(details);
-    }
-    item.append(createElement("div", "evidence-num", String(index + 1).padStart(2, "0")), body);
-    return item;
+
+  const groups = [
+    { key: "supports", title: t("supportsClaim"), tone: "support" },
+    { key: "contradicts", title: t("contradictsClaim"), tone: "danger" },
+    { key: "other", title: t("neutralUnclear"), tone: "caution" },
+  ];
+  const indexedEvidence = evidence.map((record, index) => ({
+    record,
+    index,
+    stance: assessedEvidenceStance(data, record),
+  }));
+  const sections = groups.flatMap((group) => {
+    const records = indexedEvidence.filter(({ stance }) =>
+      group.key === "other" ? !["supports", "contradicts"].includes(stance) : stance === group.key,
+    );
+    if (!records.length) return [];
+    const section = createElement("section", `evidence-group ${group.tone}`);
+    const heading = createElement("h4", "evidence-group-title");
+    heading.append(
+      createElement("span", "", group.title),
+      createElement("span", "evidence-group-count", String(records.length)),
+    );
+    section.append(
+      heading,
+      ...records.map(({ record, index, stance }) => evidenceItem(data, record, index, stance)),
+    );
+    return [section];
   });
-  replaceChildren(document.getElementById("evidenceList"), items);
+  replaceChildren(document.getElementById("evidenceList"), sections);
+}
+
+function renderClaimBreakdown(data) {
+  const claims = Array.isArray(data.claims) ? data.claims : [];
+  if (!claims.length) {
+    replaceChildren(claimBreakdown, [
+      createElement("div", "empty-state", t("noClaimBreakdown")),
+    ]);
+    return;
+  }
+
+  const cards = claims.map((claim, claimIndex) => {
+    const card = createElement("article", "claim-card");
+    const heading = createElement("div", "claim-card-heading");
+    heading.append(
+      createElement("span", "claim-number", t("claim", { number: claimIndex + 1 })),
+      createElement(
+        "span",
+        "claim-source-count",
+        t("sources", {
+          count: (data.evidence || []).filter((record) =>
+            record.claimIds?.includes(claim.claimId),
+          ).length,
+        }),
+      ),
+    );
+    card.append(
+      heading,
+      createElement("h3", "claim-card-text", claim.normalizedText || claim.originalText),
+    );
+
+    const analyses = (data.agentAnalyses || []).filter(
+      (analysis) => analysis.claimId === claim.claimId,
+    );
+    if (!analyses.length) {
+      card.append(createElement("div", "empty-state", t("noModel")));
+      return card;
+    }
+    const assessments = createElement("div", "claim-assessments");
+    analyses.forEach((analysis, analysisIndex) => {
+      const row = createElement("div", "claim-assessment");
+      const confidence = formatModelPercent(analysis.confidence);
+      row.append(
+        createElement("span", "claim-verifier", t("verifier", {
+          name: String.fromCharCode(65 + analysisIndex),
+        })),
+        createElement(
+          "span",
+          `stance-badge ${findingClass(analysis.stance)}`,
+          humanize(analysis.stance),
+        ),
+        createElement(
+          "span",
+          "claim-confidence",
+          confidence === "—"
+            ? t("confidenceUnavailable")
+            : t("percentConfidence", { percent: confidence }),
+        ),
+      );
+      const summary = createElement("p", "claim-analysis-summary", analysis.reasoningSummary);
+      assessments.append(row, summary);
+    });
+    card.append(assessments);
+    return card;
+  });
+  replaceChildren(claimBreakdown, cards);
 }
 
 function renderDisagreement(data) {
@@ -686,92 +1240,162 @@ function renderDisagreement(data) {
   const agreements = data.judgeResult?.agreements || [];
   const findings = disagreements.length ? disagreements : agreements;
   document.getElementById("disagreementTitle").textContent = disagreements.length
-    ? "Where models diverge"
-    : "Where models agree";
+    ? t("modelsDiverge")
+    : t("modelsAgree");
   const rows = findings.map((finding, index) => {
     const row = createElement("div", "disagree-row");
     row.append(
-      createElement("div", "m", `${disagreements.length ? "POINT" : "AGREE"} ${index + 1}`),
+      createElement("div", "m", t(disagreements.length ? "point" : "agree", {
+        number: index + 1,
+      })),
       createElement("div", "", finding),
     );
     return row;
   });
-  if (!rows.length) rows.push(createElement("div", "empty-state", "Model comparison unavailable."));
+  if (!rows.length) rows.push(createElement("div", "empty-state", t("comparisonUnavailable")));
   replaceChildren(document.getElementById("disagreementList"), rows);
-  document.getElementById("judgeSummary").textContent =
-    data.judgeResult?.reasoningSummary || "Consensus judge did not return a valid summary.";
 }
 
 function renderNotices(data) {
   const notices = document.getElementById("resultNotices");
   const entries = [];
-  if (data.status && data.status !== "complete") entries.push(`Workflow status: ${humanize(data.status)}.`);
-  if (data.biasAudit?.status) entries.push(`Bias audit: ${humanize(data.biasAudit.status)}.`);
-  (data.warnings || []).forEach((warning) => entries.push(`Warning: ${warning}`));
-  (data.limitations || []).forEach((limitation) => entries.push(`Limitation: ${limitation}`));
-  (data.errors || []).forEach((error) => entries.push(`${error.stage}: ${error.message}`));
+  if (data.status && data.status !== "complete") {
+    entries.push(t("workflowStatus", { status: humanize(data.status) }));
+  }
+  if (data.biasAudit?.status && data.biasAudit.status !== "passed") {
+    entries.push(t("auditNotice", { status: humanize(data.biasAudit.status) }));
+  }
+  (data.warnings || []).forEach((warning) => entries.push(t("warning", { text: warning })));
+  (data.limitations || []).forEach((limitation) => entries.push(t("limitation", { text: limitation })));
+  (data.errors || []).forEach((error) =>
+    entries.push(`${humanize(error.stage)}: ${error.message}`),
+  );
   if (!entries.length) {
     notices.hidden = true;
     replaceChildren(notices);
     return;
   }
+  const uniqueEntries = [...new Set(entries)];
+  const title = data.status === "degraded"
+    ? t("partialResult")
+    : data.status === "failed"
+      ? t("verificationIncomplete")
+      : t("importantContext");
   const list = createElement("ul", "");
-  entries.forEach((entry) => list.append(createElement("li", "", entry)));
-  replaceChildren(notices, [list]);
+  uniqueEntries.forEach((entry) => list.append(createElement("li", "", entry)));
+  replaceChildren(notices, [createElement("h3", "", title), list]);
+  notices.className = `result-notices ${data.status || "inconclusive"}`;
   notices.hidden = false;
 }
 
 function renderResult(data) {
+  lastRenderedResult = data;
   const score = data.score || null;
   const verdict = score?.verdict || data.verdict || "mixed_or_inconclusive";
   animateScore(score?.truthScore);
   const verdictPill = document.getElementById("verdictPill");
-  verdictPill.textContent = verdictLabels[verdict] || humanize(verdict);
+  const localizedVerdict = verdictLabel(verdict);
+  verdictPill.textContent = localizedVerdict;
   verdictPill.className = `verdict-pill ${findingClass(verdict)}`;
+  document.getElementById("resultSummary").textContent =
+    data.judgeResult?.reasoningSummary ||
+    data.agentAnalyses?.[0]?.reasoningSummary ||
+    t("reliableSummaryUnavailable");
   checkTime.textContent = formatDate(data.completedAt);
   const requestIds = Array.isArray(data.gonkaRequestIds) ? data.gonkaRequestIds : [];
-  document.getElementById("requestCount").textContent =
-    `${requestIds.length} Gonka request ID${requestIds.length === 1 ? "" : "s"}`;
-  document.getElementById("confidenceScore").textContent = Number.isFinite(Number(score?.confidenceScore))
-    ? `Confidence ${Math.round(Number(score.confidenceScore))}%`
-    : "Confidence unavailable";
+  document.getElementById("requestCount").textContent = t("requestIds", {
+    count: requestIds.length,
+  });
+  const confidence = Number(score?.confidenceScore);
+  const confidenceText = Number.isFinite(confidence)
+    ? t("confidenceScore", { score: Math.round(confidence) })
+    : t("confidenceUnavailable");
+  document.getElementById("confidenceScore").textContent = confidenceText;
+  const supportScore = Number(score?.truthScore);
+  document.getElementById("scoreAnnouncement").textContent = Number.isFinite(supportScore)
+    ? t("supportAnnouncement", {
+      verdict: localizedVerdict,
+      score: Math.round(supportScore),
+      confidence: confidenceText,
+    })
+    : t("supportUnavailable", {
+      verdict: localizedVerdict,
+      confidence: confidenceText,
+    });
   renderClaims(data.claims);
+  renderNotices(data);
+  renderEvidence(data);
+  renderClaimBreakdown(data);
+  renderDisagreement(data);
   renderModels(data);
   renderAnalysisTrace(data);
-  renderEvidence(data);
-  renderDisagreement(data);
-  renderNotices(data);
   results.hidden = false;
   requestAnimationFrame(() => results.classList.add("show"));
 }
 
-function renderHistoryRows(rows) {
-  historyCount.textContent = `${rows.length} record${rows.length === 1 ? "" : "s"}`;
-  if (!rows.length) {
-    replaceChildren(historyList, [createElement("div", "empty-state", "No saved verifications yet. Run your first check above.")]);
+function historyCategory(row) {
+  const status = String(row.provider_status || row.status || "").toLowerCase();
+  const verdict = String(row.final_verdict || "").toLowerCase();
+  if (status === "degraded" || status === "failed") return "degraded";
+  if (verdict.includes("contradicted")) return "contradicted";
+  if (verdict.includes("supported")) return "supported";
+  return "inconclusive";
+}
+
+function filteredHistoryRows() {
+  const query = historySearch.value.trim().toLowerCase();
+  const category = historyVerdictFilter.value;
+  return historyRows.filter((row) => {
+    const text = `${row.extracted_claim || ""} ${row.original_input || ""}`.toLowerCase();
+    return (!query || text.includes(query)) &&
+      (category === "all" || historyCategory(row) === category);
+  });
+}
+
+function renderHistoryRows() {
+  const filteredRows = filteredHistoryRows();
+  const visibleRows = filteredRows.slice(0, historyVisibleCount);
+  historyCount.textContent = filteredRows.length === historyRows.length
+    ? t("records", { count: historyRows.length })
+    : t("filteredRecords", { shown: filteredRows.length, total: historyRows.length });
+  historyLoadMore.hidden = visibleRows.length >= filteredRows.length;
+  if (!filteredRows.length) {
+    const message = historyRows.length
+      ? t("noHistoryMatch")
+      : t("noHistory");
+    replaceChildren(historyList, [createElement("div", "empty-state", message)]);
     return;
   }
-  const items = rows.map((row) => {
-    const button = createElement("button", "history-item");
+  const items = visibleRows.map((row) => {
+    const rowId = row.external_verification_id || row.id;
+    const button = createElement(
+      "button",
+      `history-item${activeHistoryId === rowId ? " active" : ""}`,
+    );
     button.type = "button";
+    if (activeHistoryId === rowId) button.setAttribute("aria-current", "true");
     const score = Number(row.final_truth_score);
     const scoreText = row.final_truth_score !== null && Number.isFinite(score)
       ? `${Math.round(score)}%`
-      : "No score";
+      : t("noScore");
+    const status = row.final_verdict || row.provider_status || row.status;
+    const meta = createElement("span", "history-meta");
+    meta.append(
+      createElement("span", `history-verdict ${historyCategory(row)}`, humanize(status)),
+      createElement("span", "", scoreText),
+      createElement("span", "", formatDate(row.completed_at || row.created_at)),
+    );
     button.append(
       createElement(
         "span",
         "history-claim",
-        row.extracted_claim || row.original_input || "Untitled verification",
+        row.extracted_claim || row.original_input || t("untitledVerification"),
       ),
-      createElement(
-        "span",
-        "history-meta",
-        `${humanize(row.final_verdict || row.provider_status || row.status)} · ${scoreText} · ${formatDate(row.completed_at || row.created_at)}`,
-      ),
+      meta,
     );
     button.addEventListener("click", async () => {
       button.disabled = true;
+      button.classList.add("loading");
       setVerificationMessage("");
       try {
         if (row.external_verification_id) {
@@ -786,15 +1410,18 @@ function renderHistoryRows(rows) {
             .eq("id", row.id)
             .maybeSingle();
           if (error || !data?.raw_result) {
-            throw new Error("Full report is unavailable for this legacy history record.");
+            throw new Error(t("fullReportUnavailable"));
           }
           renderResult(data.raw_result);
         }
+        activeHistoryId = rowId;
+        renderHistoryRows();
         results.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (error) {
-        setVerificationMessage(error.message || "Could not load verification history.");
+        setVerificationMessage(error.message || t("historyLoadFailed"));
       } finally {
         button.disabled = false;
+        button.classList.remove("loading");
       }
     });
     return button;
@@ -806,8 +1433,11 @@ async function loadHistory() {
   if (!supabaseClient || !currentSession?.user) return;
   const loadGeneration = ++historyLoadGeneration;
   historyRefresh.disabled = true;
-  replaceChildren(historyList, [createElement("div", "empty-state", "Loading history...")]);
-  historyCount.textContent = "Loading…";
+  historySearch.disabled = true;
+  historyVerdictFilter.disabled = true;
+  historyLoadMore.hidden = true;
+  replaceChildren(historyList, [createElement("div", "empty-state", t("loadingHistory"))]);
+  historyCount.textContent = t("loadingHistory");
   const expectedUserId = currentSession.user.id;
 
   const rows = [];
@@ -831,61 +1461,83 @@ async function loadHistory() {
 
   if (loadGeneration !== historyLoadGeneration) return;
   historyRefresh.disabled = false;
+  historySearch.disabled = false;
+  historyVerdictFilter.disabled = false;
   if (currentSession?.user?.id !== expectedUserId) return;
   if (historyError) {
-    historyCount.textContent = "Unavailable";
-    replaceChildren(historyList, [createElement("div", "empty-state error-text", "History could not be loaded.")]);
+    historyRows = [];
+    historyCount.textContent = t("unavailable");
+    replaceChildren(historyList, [
+      createElement("div", "empty-state error-text", t("historyUnavailable")),
+    ]);
     return;
   }
-  renderHistoryRows(rows);
+  historyRows = rows;
+  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
+  renderHistoryRows();
 }
 
 async function runCheck() {
   const claim = input.value.trim();
   if (!currentSession) {
-    openLogin("Sign in before running verification.");
+    openLogin(t("signInBeforeVerification"));
     return;
   }
   if (!claim) {
-    setVerificationMessage("Enter a claim or public URL first.");
+    setVerificationMessage(t("enterClaim"));
     input.focus();
     return;
   }
 
-  checkButton.disabled = true;
+  const controller = new AbortController();
+  const userId = currentSession.user.id;
+  const outputLanguage = selectedLanguage;
+  const startedAt = Date.now();
+  activeVerificationController = controller;
+  updateInputUi();
   checkButton.setAttribute("aria-busy", "true");
-  checkLabel.textContent = "Analyzing…";
+  checkLabel.textContent = t("analyzing");
   results.hidden = true;
   results.classList.remove("show");
   setVerificationMessage("");
-  startPipeline();
+  startPipeline(startedAt);
 
   try {
-    const data = await apiRequest("/verifications", {
+    const job = await apiRequest("/verification-jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: claim }),
+      body: JSON.stringify({ input: claim, outputLanguage }),
+      signal: controller.signal,
     });
-    finishPipeline(data);
-    renderResult(data);
-    if (data.status === "degraded") {
-      setVerificationMessage("Verification completed with partial provider results. Review warnings below.", "warning");
-    } else if (data.status === "failed") {
-      setVerificationMessage("Verification failed. Review errors below.");
-    } else {
-      setVerificationMessage("Verification completed.", "success");
-    }
-    await loadHistory();
-    results.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!job?.jobId) throw new Error(t("requestFailed"));
+    writePendingVerification(userId, {
+      jobId: job.jobId,
+      startedAt,
+      outputLanguage,
+    });
+    const data = await waitForVerificationJob(job.jobId, controller);
+    clearPendingVerification(userId);
+    if (activeVerificationController === controller) activeVerificationController = null;
+    await showVerificationResult(data);
   } catch (error) {
-    const message = error.message || "Verification request failed.";
-    failPipeline(message);
-    setVerificationMessage(message);
-    if (!currentSession) openLogin("Session expired. Sign in again.");
+    if (error.name === "AbortError") {
+      const message = t("stoppedWaiting");
+      failPipeline(message);
+      setVerificationMessage(message, "warning");
+    } else {
+      if (error.terminal || [403, 404].includes(error.status)) {
+        clearPendingVerification(userId);
+      }
+      const message = error.message || t("requestFailed");
+      failPipeline(message);
+      setVerificationMessage(message);
+      if (!currentSession) openLogin(t("sessionExpired"));
+    }
   } finally {
-    checkLabel.textContent = "Run Verification";
-    checkButton.disabled = false;
+    if (activeVerificationController === controller) activeVerificationController = null;
+    checkLabel.textContent = t("runVerification");
     checkButton.removeAttribute("aria-busy");
+    updateInputUi();
   }
 }
 
@@ -900,7 +1552,7 @@ function applyTheme(theme) {
   const nextTheme = normalizedTheme === "dark" ? "light" : "dark";
   themeToggle.querySelector(".theme-icon").textContent = normalizedTheme === "dark" ? "☀" : "☾";
   themeToggle.querySelector(".theme-label").textContent = humanize(nextTheme);
-  themeToggle.setAttribute("aria-label", `Use ${nextTheme} theme`);
+  themeToggle.setAttribute("aria-label", t(nextTheme === "light" ? "useLightTheme" : "useDarkTheme"));
 }
 
 function initializeTheme() {
@@ -938,21 +1590,33 @@ async function initializeAuth() {
   updateAuthUi(data.session);
 }
 
-input.addEventListener("input", () => {
-  charCount.textContent = `${input.value.length} / ${input.maxLength}`;
-});
+input.addEventListener("input", updateInputUi);
 input.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void runCheck();
 });
-document.querySelectorAll(".chip").forEach((chip) => {
-  chip.addEventListener("click", () => {
-    input.value = examples[chip.dataset.ex] || "";
-    input.dispatchEvent(new Event("input"));
-    input.focus();
-  });
-});
 checkButton.addEventListener("click", () => void runCheck());
+clearInputButton.addEventListener("click", () => {
+  input.value = "";
+  updateInputUi();
+  input.focus();
+});
+stopWaitingButton.addEventListener("click", () => {
+  stopWaitingButton.disabled = true;
+  activeVerificationController?.abort();
+});
 historyRefresh.addEventListener("click", () => void loadHistory());
+historySearch.addEventListener("input", () => {
+  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
+  renderHistoryRows();
+});
+historyVerdictFilter.addEventListener("change", () => {
+  historyVisibleCount = HISTORY_RENDER_BATCH_SIZE;
+  renderHistoryRows();
+});
+historyLoadMore.addEventListener("click", () => {
+  historyVisibleCount += HISTORY_RENDER_BATCH_SIZE;
+  renderHistoryRows();
+});
 promptLoginButton.addEventListener("click", () => openLogin());
 openLoginButton.addEventListener("click", () => {
   openLogin(configuredForAuth() ? "" : "Copy config.example.js to config.js and add public Supabase settings.");
@@ -981,11 +1645,11 @@ loginModal.addEventListener("keydown", (event) => {
 
 googleLoginButton.addEventListener("click", async () => {
   if (!supabaseClient) {
-    authMessage.textContent = "Public Supabase configuration is missing.";
+    authMessage.textContent = t("authMissing");
     return;
   }
   googleLoginButton.disabled = true;
-  authMessage.textContent = "Redirecting to Google…";
+  authMessage.textContent = t("redirectingGoogle");
   try {
     const { error } = await supabaseClient.auth.signInWithOAuth({
       provider: "google",
@@ -993,7 +1657,7 @@ googleLoginButton.addEventListener("click", async () => {
     });
     if (error) throw error;
   } catch (error) {
-    authMessage.textContent = error.message || "Google login failed.";
+    authMessage.textContent = error.message || t("googleLoginFailed");
     googleLoginButton.disabled = false;
   }
 });
@@ -1002,8 +1666,9 @@ logoutButton.addEventListener("click", async () => {
   logoutButton.disabled = true;
   const { error } = await supabaseClient.auth.signOut({ scope: "local" });
   logoutButton.disabled = false;
-  if (error) setVerificationMessage(error.message || "Sign out failed.");
+  if (error) setVerificationMessage(error.message || t("signOutFailed"));
 });
+languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
 themeToggle.addEventListener("click", () => {
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 });
@@ -1011,8 +1676,11 @@ pipelineToggle.addEventListener("click", () => {
   const isExpanded = pipelineToggle.getAttribute("aria-expanded") === "true";
   pipelineDetails.hidden = isExpanded;
   pipelineToggle.setAttribute("aria-expanded", String(!isExpanded));
-  pipelineToggle.textContent = isExpanded ? "Show details" : "Hide details";
+  pipelineToggle.textContent = t(isExpanded ? "showDetails" : "hideDetails");
 });
 
+initializeLanguage();
 initializeTheme();
+renderTrendingTopics([], "fallback");
+updateInputUi();
 void initializeAuth();

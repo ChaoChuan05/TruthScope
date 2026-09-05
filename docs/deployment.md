@@ -130,16 +130,20 @@ Use:
 
 AWS documents the standard [ECS Fargate service workflow](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/getting-started-fargate.html)
 and a newer [ECS Express Mode workflow](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-getting-started.html).
-Standard ECS/Fargate is the safer current choice for TruthScope because the synchronous API needs
-explicit control over Application Load Balancer settings.
+Standard ECS/Fargate is the safer current choice for TruthScope because it gives explicit control
+over task count, networking, health checks, logs, and Application Load Balancer settings.
 
 ### Long-request requirement
 
-An Application Load Balancer has a default idle timeout of 60 seconds. TruthScope live verification
-can take several minutes when provider retries occur. Set the backend ALB
-`idle_timeout.timeout_seconds` above the worst permitted request duration; `400` seconds matches the
-current six-minute client smoke-test allowance with a small margin. AWS documents the attribute and
-default under [Application Load Balancer attributes](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/application-load-balancers.html#load-balancer-attributes).
+An Application Load Balancer has a default idle timeout of 60 seconds. The frontend now starts a
+short request and polls a process-local verification job, so its normal flow does not hold one HTTP
+connection for the full model runtime. The backward-compatible synchronous endpoint can still take
+several minutes; raise <code>idle_timeout.timeout_seconds</code> only if clients use that endpoint.
+AWS documents the attribute and default under [Application Load Balancer attributes](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/application-load-balancers.html#load-balancer-attributes).
+
+Run exactly one backend worker/task while jobs remain process-local. Multiple replicas can route a
+poll to a process that does not own the job. A shared durable job store/queue is required before
+horizontal scaling.
 
 This is a prototype accommodation. A production design should submit a job, return `202 Accepted`,
 and expose polling or server-sent progress instead of keeping one HTTP connection open.

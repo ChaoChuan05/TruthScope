@@ -540,7 +540,8 @@ It is not yet a production-ready public endpoint:
 - Google OAuth redirects are not finalized for a public HTTPS origin;
 - backend secrets live in an EC2 file rather than AWS Secrets Manager;
 - no reverse proxy, Cloudflare Tunnel, domain, certificate, monitoring, or CI/CD is configured; and
-- the synchronous verification request can run for several minutes.
+- verification jobs survive browser refresh but not a backend container restart, and require one
+  backend worker while the registry remains process-local.
 
 The completed no-domain continuation uses two Cloudflare Quick Tunnels and is documented step by
 step in [Deployment Part 2](deployment-part-2-quick-tunnels.md). Quick Tunnels are appropriate for

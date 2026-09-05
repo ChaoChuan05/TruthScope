@@ -12,6 +12,7 @@ System-level data flow and verification workflow live in
 index.html          Active application markup and accessible result regions
 style.css           Responsive dark/light themes and component states
 script.js           Auth, API calls, progress, rendering, history, and interactions
+i18n.js             English, Bahasa Melayu, and Simplified Chinese UI dictionaries
 login-wave.js       Decorative login canvas with reduced-motion handling
 config.example.js   Safe configuration template committed to Git
 config.js           Local browser configuration ignored by Git
@@ -24,7 +25,8 @@ Main application loads scripts in this order:
 1. <code>config.js</code>
 2. Supabase JavaScript v2 from jsDelivr
 3. <code>login-wave.js</code>
-4. <code>script.js</code>
+4. <code>i18n.js</code>
+5. <code>script.js</code>
 
 Authentication logic used by <code>index.html</code> lives in <code>script.js</code>.
 
@@ -116,20 +118,38 @@ Use root <code>compose.yaml</code> to run the complete stack. See
 - Backend calls include <code>Authorization: Bearer &lt;access-token&gt;</code>.
 - One automatic session refresh occurs after first backend <code>401</code>.
 - Text and public URL claims share one verification form.
-- Expandable progress panel shows elapsed time and estimated stages during synchronous request.
+- Signed-in users receive three current Malaysian news suggestions from the authenticated backend
+  topic endpoint. The browser caches them in per-user <code>sessionStorage</code>, so it makes one
+  topic request per user per tab session; safe examples remain available when Brave is unavailable.
+- Input type detection, character count, keyboard shortcut, and clear action improve claim entry.
+- Expandable progress panel polls a resumable backend job and shows elapsed time plus explicitly
+  estimated stages. Per-user job ID/start time persist locally, so refresh resumes tracking. Users
+  may stop browser-side waiting without stopping backend processing.
 - Confirmed Gonka tasks, served models, latencies, request IDs, evidence count, and failures
   replace estimates after response.
-- Results render claims, deterministic scores, verifier summaries, judge findings, bias status,
-  evidence sources, disagreements, warnings, limitations, and provider errors.
+- Results prioritize limitations, verdict explanation, grouped evidence, and per-claim analysis.
+  Model cards, audit summaries, and request IDs remain available in collapsed technical details.
+- Evidence displays verifier-assessed stance, source type, quality summary, claim mapping, excerpts,
+  and source-specific limitations.
 - Source links allow only HTTP and HTTPS and open with <code>noopener noreferrer</code>.
-- History reads every authenticated user-owned summary page in 500-row batches.
+- History reads every authenticated user-owned summary page in 500-row batches, supports local
+  search/verdict filtering, and renders 25 rows at a time to keep the page responsive.
 - Current history records load canonical full result through backend ownership check.
 - Legacy records without external verification ID fall back to stored
   <code>verification_runs.raw_result</code>.
 - Dark/light preference persists in local storage.
+- Header language selector switches static and generated UI labels between English, Bahasa
+  Melayu, and Simplified Chinese, including while a verification job runs. Preference persists in
+  local storage; a running job keeps the output language selected when it was submitted.
+- New verification requests send <code>outputLanguage</code> as <code>en</code>, <code>ms</code>, or
+  <code>zh-CN</code>. Existing Gonka stages generate user-facing prose in that language without a
+  separate translation API. Source titles, quotations, excerpts, IDs, and enum values stay intact.
+- Changing UI language does not rewrite prose inside an already saved report. Run a new
+  verification in selected language to generate that report language.
 
-In-flight stage names are estimates because current POST endpoint returns one final synchronous
-response, not server-sent progress events.
+In-flight stage names remain estimates because polling exposes job state, not per-node events.
+Completed output supplies confirmed model/request metadata. Job recovery survives a page refresh,
+not a backend restart, because the hackathon job registry is process-local.
 
 ## Supabase browser access
 
@@ -144,13 +164,23 @@ only UX; backend and RLS remain authorization boundaries.
 
 ## Manual smoke test
 
-1. Open application and switch light/dark themes.
+1. Open application and switch light/dark themes. Switch English, Bahasa Melayu, and 中文; reload
+   and confirm language preference persists.
 2. Sign in with Google and confirm account name appears.
-3. Submit <code>Malaysia reported a population of 34.1 million in 2024.</code>.
-4. Expand/collapse activity panel while request runs.
-5. Confirm final result shows evidence, two verifiers, judge, bias audit, and request metadata.
-6. Refresh History and reopen saved result.
-7. Sign out and confirm Verify, results, and History become unavailable.
+3. Confirm current topic chips load after sign-in, survive a reload without another topic request,
+   and populate the claim box when selected.
+4. Submit <code>Malaysia reported a population of 34.1 million in 2024.</code> in each selected
+   language. Confirm response <code>outputLanguage</code> and generated summaries match selection.
+5. Confirm input type changes between Text claim and Public URL; test Clear and
+   <code>Ctrl/Command + Enter</code>.
+6. Expand/collapse activity panel while a request runs. Confirm Stop waiting aborts only the
+   browser wait and explains that processing may still appear in History.
+7. Confirm final result shows prominent limitations, evidence support score explanation, grouped
+   evidence, claim breakdown, and model comparison.
+8. Expand How this was verified and confirm model, audit, and request metadata remain available.
+9. Search and filter History, use Load more, and reopen a saved result.
+10. Repeat key checks at mobile width and in both themes.
+11. Sign out and confirm Verify, results, and History become unavailable.
 
 Use <code>oauth-test.html</code> when isolating Supabase redirect or session problems.
 

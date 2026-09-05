@@ -5,12 +5,12 @@ from app.agents.nodes.common import (
     NodeUpdate,
     evidenceForModel,
     inferenceMetadata,
-    loadPrompt,
+    localizedPrompt,
     workflowError,
 )
 from app.agents.state import VerificationGraphState
 from app.integrations.gonka.client import GonkaClientProtocol
-from app.integrations.gonka.mapper import parseStructuredOutput
+from app.integrations.gonka.mapper import parseStructuredInference
 from app.schemas.agentOutput import GonkaInferenceRecord, JudgeResult
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ def createConsensusNode(
                 "agentAnalyses": [
                     analysis.model_dump(mode="json") for analysis in state["agentAnalyses"]
                 ],
+                "outputLanguage": state["outputLanguage"].value,
             }
             existingBiasAudit = state.get("biasAudit")
             if isRetry and existingBiasAudit:
@@ -57,10 +58,14 @@ def createConsensusNode(
             inference = await gonkaClient.infer(
                 taskName=taskName,
                 model=modelName,
-                systemPrompt=loadPrompt("consensusJudge.md"),
+                systemPrompt=localizedPrompt(
+                    "consensusJudge.md",
+                    state["outputLanguage"],
+                ),
                 inputPayload=inputPayload,
+                applicationRequestId=state.get("requestId"),
             )
-            output = parseStructuredOutput(inference.outputText, JudgeResult)
+            output = parseStructuredInference(inference, JudgeResult)
             validEvidenceIds = {evidence.evidenceId for evidence in state["evidence"]}
             if not set(output.reliedEvidenceIds).issubset(validEvidenceIds):
                 raise ValueError("Judge cited an unknown evidence ID.")

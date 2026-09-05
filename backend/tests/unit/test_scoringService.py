@@ -2,7 +2,7 @@ from app.schemas.agentOutput import AgentAnalysis, BiasAuditResult, EvidenceAsse
 from app.schemas.common import BiasAuditStatus, ClaimType, EvidenceStance, Verdict
 from app.schemas.evidence import EvidenceQuality, EvidenceRecord, SourceMetadata
 from app.schemas.verification import Claim
-from app.services.scoringService import calculateVerificationScore
+from app.services.scoringService import calculateModelAgreement, calculateVerificationScore
 
 
 def makeClaim(text: str) -> Claim:
@@ -166,3 +166,142 @@ def test_sourcePublisherIdentity_doesNotChangeWeight() -> None:
         contextAnalysis=None,
     )
     assert governmentScore == oppositionScore
+
+
+def test_modelAgreement_comparesModelsOnlyWithinSameClaim() -> None:
+    claimOneModelA = makeAnalysis("model-a", EvidenceStance.SUPPORTS, ["evidence-1"])
+    claimOneModelB = makeAnalysis("model-b", EvidenceStance.SUPPORTS, ["evidence-1"])
+    claimTwoModelA = makeAnalysis("model-a", EvidenceStance.CONTRADICTS, ["evidence-2"])
+    claimTwoModelA.claimId = "claim-2"
+    claimTwoModelB = makeAnalysis("model-b", EvidenceStance.CONTRADICTS, ["evidence-2"])
+    claimTwoModelB.claimId = "claim-2"
+
+    agreement = calculateModelAgreement(
+        [claimOneModelA, claimOneModelB, claimTwoModelA, claimTwoModelB]
+    )
+
+    assert agreement == 1
+
+
+def test_modelAgreement_doesNotCountDuplicateSameModelAsIndependent() -> None:
+    analyses = [
+        makeAnalysis("model-a", EvidenceStance.SUPPORTS, ["evidence-1"]),
+        makeAnalysis("model-a", EvidenceStance.SUPPORTS, ["evidence-1"]),
+    ]
+
+    assert calculateModelAgreement(analyses) == 0.5
+
+
+def test_multiClaimScore_weightsClaimsEquallyDespiteEvidenceVolume() -> None:
+    claimOne = makeClaim("Claim one")
+    claimTwo = makeClaim("Claim two").model_copy(update={"claimId": "claim-2"})
+    supportingEvidence = [
+        makeEvidence(f"support-{index}", EvidenceStance.SUPPORTS) for index in range(12)
+    ]
+    contradictingEvidence = makeEvidence("contradict", EvidenceStance.CONTRADICTS).model_copy(
+        update={"claimIds": ["claim-2"]}
+    )
+    supportIds = [record.evidenceId for record in supportingEvidence]
+    analyses = [
+        makeAnalysis("model-a", EvidenceStance.SUPPORTS, supportIds),
+        makeAnalysis("model-b", EvidenceStance.SUPPORTS, supportIds),
+        makeAnalysis("model-a", EvidenceStance.CONTRADICTS, ["contradict"]).model_copy(
+            update={"claimId": "claim-2"}
+        ),
+        makeAnalysis("model-b", EvidenceStance.CONTRADICTS, ["contradict"]).model_copy(
+            update={"claimId": "claim-2"}
+        ),
+    ]
+
+    score = calculateVerificationScore(
+        claims=[claimOne, claimTwo],
+        evidence=[*supportingEvidence, contradictingEvidence],
+        analyses=analyses,
+        biasAudit=passedAudit(),
+        contextAnalysis=None,
+    )
+
+    assert score is not None
+    assert score.truthScore == 50
+    assert score.verdict == Verdict.MIXED_OR_INCONCLUSIVE
+
+
+def test_sharedEvidence_isAssessedSeparatelyForEachClaim() -> None:
+    claimOne = makeClaim("Claim one")
+    claimTwo = makeClaim("Claim two").model_copy(update={"claimId": "claim-2"})
+    evidence = makeEvidence("shared", EvidenceStance.UNCLEAR).model_copy(
+        update={"claimIds": ["claim-1", "claim-2"]}
+    )
+    claimOneAnalyses = [
+        makeAnalysis(model, EvidenceStance.SUPPORTS, ["shared"]) for model in ("model-a", "model-b")
+    ]
+    claimTwoAnalyses = [
+        makeAnalysis(model, EvidenceStance.CONTRADICTS, ["shared"]).model_copy(
+            update={"claimId": "claim-2"}
+        )
+        for model in ("model-a", "model-b")
+    ]
+
+    score = calculateVerificationScore(
+        claims=[claimOne, claimTwo],
+        evidence=[evidence],
+        analyses=[*claimOneAnalyses, *claimTwoAnalyses],
+        biasAudit=passedAudit(),
+        contextAnalysis=None,
+    )
+
+    assert score is not None
+    assert score.truthScore == 50
+    assert score.confidenceScore > 0
+
+
+def test_duplicateAnalysisFromOneModel_cannotProduceStrongVerdict() -> None:
+    evidence = [
+        makeEvidence("evidence-1", EvidenceStance.SUPPORTS),
+        makeEvidence("evidence-2", EvidenceStance.SUPPORTS),
+    ]
+    analyses = [
+        makeAnalysis("model-a", EvidenceStance.SUPPORTS, ["evidence-1", "evidence-2"]),
+        makeAnalysis("model-a", EvidenceStance.SUPPORTS, ["evidence-1", "evidence-2"]),
+    ]
+
+    score = calculateVerificationScore(
+        claims=[makeClaim("Claim")],
+        evidence=evidence,
+        analyses=analyses,
+        biasAudit=passedAudit(),
+        contextAnalysis=None,
+    )
+
+    assert score is not None
+    assert score.truthScore == 100
+    assert score.verdict == Verdict.MIXED_OR_INCONCLUSIVE
+    assert score.formulaVersion == "truthscope-evidence-v2"
+
+
+def test_unavailableBiasAudit_cannotProduceStrongVerdict() -> None:
+    evidence = [
+        makeEvidence("evidence-1", EvidenceStance.SUPPORTS),
+        makeEvidence("evidence-2", EvidenceStance.SUPPORTS),
+    ]
+    analyses = [
+        makeAnalysis("model-a", EvidenceStance.SUPPORTS, ["evidence-1", "evidence-2"]),
+        makeAnalysis("model-b", EvidenceStance.SUPPORTS, ["evidence-1", "evidence-2"]),
+    ]
+    unavailableAudit = BiasAuditResult(
+        status=BiasAuditStatus.UNAVAILABLE,
+        reasoningSummary="Audit unavailable.",
+        confidencePenalty=0.7,
+    )
+
+    score = calculateVerificationScore(
+        claims=[makeClaim("Claim")],
+        evidence=evidence,
+        analyses=analyses,
+        biasAudit=unavailableAudit,
+        contextAnalysis=None,
+    )
+
+    assert score is not None
+    assert score.truthScore == 100
+    assert score.verdict == Verdict.MIXED_OR_INCONCLUSIVE

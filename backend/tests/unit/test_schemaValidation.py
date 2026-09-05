@@ -48,6 +48,10 @@ def test_defaultGonkaRoles_useThreeDistinctModels() -> None:
         == 3
     )
     assert settings.GONKA_JUDGE_MODEL == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert settings.GONKA_REDUCED_CALLS is True
+    assert settings.MAX_EVIDENCE_QUERIES_PER_CLAIM == 1
+    assert settings.MAX_EVIDENCE_PER_CLAIM == 6
+    assert settings.MAX_TOTAL_EVIDENCE == 8
 
 
 def test_duplicateJudgeModel_isRejected() -> None:

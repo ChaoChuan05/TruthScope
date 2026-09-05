@@ -50,7 +50,9 @@ class BraveSearchEvidenceRetriever:
         country: str = "MY",
         searchLanguage: str = "en",
         resultsPerQuery: int = 3,
+        maxQueriesPerClaim: int = 3,
         maxEvidencePerClaim: int = 12,
+        maxTotalEvidence: int = 20,
         httpClient: httpx.AsyncClient | None = None,
     ) -> None:
         if not apiKey.strip():
@@ -60,7 +62,9 @@ class BraveSearchEvidenceRetriever:
         self.country = country
         self.searchLanguage = searchLanguage
         self.resultsPerQuery = resultsPerQuery
+        self.maxQueriesPerClaim = maxQueriesPerClaim
         self.maxEvidencePerClaim = maxEvidencePerClaim
+        self.maxTotalEvidence = maxTotalEvidence
         self._ownsClient = httpClient is None
         self.httpClient = httpClient or httpx.AsyncClient(
             base_url=baseUrl.rstrip("/"),
@@ -84,33 +88,70 @@ class BraveSearchEvidenceRetriever:
         if not queries or not claims:
             return []
 
-        searchCalls = [self._search(query) for query in queries]
+        boundedQueries: list[EvidenceQuery] = []
+        queryCountByClaim: dict[str, int] = {}
+        for query in queries:
+            queryCount = queryCountByClaim.get(query.claimId, 0)
+            if queryCount >= self.maxQueriesPerClaim:
+                continue
+            boundedQueries.append(query)
+            queryCountByClaim[query.claimId] = queryCount + 1
+
+        searchCalls = [self._search(query) for query in boundedQueries]
         searchResults = await asyncio.gather(*searchCalls, return_exceptions=True)
-        candidatesByUrl: dict[str, _SearchCandidate] = {}
+        claimIds = list(dict.fromkeys(claim.claimId for claim in claims))
+        searchResultsByClaim: dict[str, list[list[_BraveSearchResult]]] = {
+            claimId: [] for claimId in claimIds
+        }
         failedSearches = 0
-        for query, result in zip(queries, searchResults, strict=True):
+        for query, result in zip(boundedQueries, searchResults, strict=True):
             if isinstance(result, BaseException):
                 failedSearches += 1
                 continue
-            for item in result[: self.maxEvidencePerClaim]:
-                normalizedUrl = str(item.url)
+            if query.claimId in searchResultsByClaim:
+                searchResultsByClaim[query.claimId].append(result)
+
+        urlsByClaim: dict[str, list[str]] = {claimId: [] for claimId in claimIds}
+        for claimId in claimIds:
+            seenUrls: set[str] = set()
+            for result in searchResultsByClaim[claimId]:
+                for item in result:
+                    normalizedUrl = str(item.url)
+                    try:
+                        validatePublicUrl(normalizedUrl)
+                    except Exception:
+                        continue
+                    if normalizedUrl in seenUrls:
+                        continue
+                    urlsByClaim[claimId].append(normalizedUrl)
+                    seenUrls.add(normalizedUrl)
+
+        candidatesByUrl: dict[str, _SearchCandidate] = {}
+        candidates: list[_SearchCandidate] = []
+        remainingUrls = {claimId: iter(urls) for claimId, urls in urlsByClaim.items()}
+        activeClaimIds = list(claimIds)
+        while activeClaimIds:
+            nextActiveClaimIds: list[str] = []
+            for claimId in activeClaimIds:
                 try:
-                    validatePublicUrl(normalizedUrl)
-                except Exception:
+                    normalizedUrl = next(remainingUrls[claimId])
+                except StopIteration:
                     continue
-                candidate = candidatesByUrl.setdefault(
-                    normalizedUrl,
-                    _SearchCandidate(url=normalizedUrl),
-                )
-                if query.claimId not in candidate.claimIds:
-                    candidate.claimIds.append(query.claimId)
+                nextActiveClaimIds.append(claimId)
+                candidate = candidatesByUrl.get(normalizedUrl)
+                if candidate is None:
+                    candidate = _SearchCandidate(url=normalizedUrl)
+                    candidatesByUrl[normalizedUrl] = candidate
+                    candidates.append(candidate)
+                if claimId not in candidate.claimIds:
+                    candidate.claimIds.append(claimId)
+            activeClaimIds = nextActiveClaimIds
 
         if failedSearches == len(searchCalls):
             raise RetrievalError("All Brave Search requests failed.")
-        if not candidatesByUrl:
+        if not candidates:
             return []
 
-        candidates = list(candidatesByUrl.values())
         semaphore = asyncio.Semaphore(5)
 
         async def fetchCandidate(candidate: _SearchCandidate) -> EvidenceRecord | None:
@@ -129,22 +170,61 @@ class BraveSearchEvidenceRetriever:
                     ],
                 )
 
-        fetchedEvidence = await asyncio.gather(
-            *(fetchCandidate(candidate) for candidate in candidates)
-        )
-        evidenceById: dict[str, EvidenceRecord] = {}
-        for record in fetchedEvidence:
-            if record is None:
+        evidence: list[EvidenceRecord] = []
+        evidenceIndexById: dict[str, int] = {}
+        evidenceCountByClaim: dict[str, int] = {}
+        candidateIndex = 0
+        while len(evidence) < self.maxTotalEvidence and candidateIndex < len(candidates):
+            batch: list[_SearchCandidate] = []
+            provisionalCounts = dict(evidenceCountByClaim)
+            batchLimit = min(5, self.maxTotalEvidence - len(evidence))
+            while candidateIndex < len(candidates) and len(batch) < batchLimit:
+                candidate = candidates[candidateIndex]
+                candidateIndex += 1
+                eligibleClaimIds = [
+                    claimId
+                    for claimId in candidate.claimIds
+                    if provisionalCounts.get(claimId, 0) < self.maxEvidencePerClaim
+                ]
+                if not eligibleClaimIds:
+                    continue
+                batch.append(_SearchCandidate(url=candidate.url, claimIds=eligibleClaimIds))
+                for claimId in eligibleClaimIds:
+                    provisionalCounts[claimId] = provisionalCounts.get(claimId, 0) + 1
+            if not batch:
                 continue
-            existing = evidenceById.get(record.evidenceId)
-            if existing is None:
-                evidenceById[record.evidenceId] = record
-                continue
-            mergedClaimIds = list(dict.fromkeys([*existing.claimIds, *record.claimIds]))
-            evidenceById[record.evidenceId] = existing.model_copy(
-                update={"claimIds": mergedClaimIds}
-            )
-        evidence = list(evidenceById.values())
+            fetchedEvidence = await asyncio.gather(*(fetchCandidate(item) for item in batch))
+            for record in fetchedEvidence:
+                if record is None:
+                    continue
+                eligibleClaimIds = [
+                    claimId
+                    for claimId in record.claimIds
+                    if evidenceCountByClaim.get(claimId, 0) < self.maxEvidencePerClaim
+                ]
+                if not eligibleClaimIds:
+                    continue
+                existingIndex = evidenceIndexById.get(record.evidenceId)
+                if existingIndex is not None:
+                    existing = evidence[existingIndex]
+                    newClaimIds = [
+                        claimId for claimId in eligibleClaimIds if claimId not in existing.claimIds
+                    ]
+                    if newClaimIds:
+                        evidence[existingIndex] = existing.model_copy(
+                            update={"claimIds": [*existing.claimIds, *newClaimIds]}
+                        )
+                        for claimId in newClaimIds:
+                            evidenceCountByClaim[claimId] = evidenceCountByClaim.get(claimId, 0) + 1
+                    continue
+                if len(evidence) >= self.maxTotalEvidence:
+                    break
+                record = record.model_copy(update={"claimIds": eligibleClaimIds})
+                evidenceIndexById[record.evidenceId] = len(evidence)
+                evidence.append(record)
+                for claimId in eligibleClaimIds:
+                    evidenceCountByClaim[claimId] = evidenceCountByClaim.get(claimId, 0) + 1
+
         if candidates and not evidence:
             raise RetrievalError("Search results were found, but no source page could be fetched.")
         return evidence

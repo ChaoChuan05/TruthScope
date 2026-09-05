@@ -10,7 +10,7 @@ from app.schemas.agentOutput import (
     JudgeResult,
     WorkflowError,
 )
-from app.schemas.common import InputType
+from app.schemas.common import InputType, OutputLanguage
 from app.schemas.evidence import EvidenceQuery, EvidenceRecord, RetrievedDocument
 from app.schemas.verification import Claim, VerificationResult, VerificationScore
 
@@ -21,6 +21,7 @@ class VerificationGraphState(TypedDict, total=False):
     userId: str | None
     originalInput: str
     inputType: InputType
+    outputLanguage: OutputLanguage
     analysisInput: str
     sourceDocument: RetrievedDocument | None
     normalizedText: str

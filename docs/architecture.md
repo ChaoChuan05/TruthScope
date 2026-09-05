@@ -58,7 +58,7 @@ flowchart LR
 | VerificationService | IDs, initial state, graph execution, persistence |
 | LangGraph | Typed stages, routing, partial-state accumulation, bounded neutrality retry |
 | Gonka adapter | Anthropic-compatible Messages API, task policies, request metadata |
-| Retrieval adapters | Brave candidate search, public-page fetching, evidence conversion |
+| Retrieval adapters | Brave candidate/news search, public-page fetching, evidence conversion |
 | Scoring service | Pure evidence and confidence calculation |
 | Supabase Auth | Google session and backend token validation |
 | Supabase Postgres | Profiles, user-owned history, normalized records, full result document |
@@ -78,6 +78,7 @@ backend/
 frontend/
   index.html           Application structure
   script.js            Auth, API, rendering, progress, history
+  i18n.js              English, Malay, and Chinese UI dictionaries
   style.css            Responsive themes and states
   login-wave.js        Decorative login animation
 
@@ -144,21 +145,23 @@ HTTP routes cannot authenticate.
 
 ## 6. Verification workflow
 
-Backend POST is synchronous. One response returns after graph execution and persistence attempt.
+The recommended browser path creates an authenticated in-memory job, then polls it. The background
+task runs the same service and graph after the initiating HTTP request returns. The legacy
+<code>POST /verifications</code> remains synchronous for scripts and compatibility.
 
 ~~~mermaid
 flowchart TD
-    Start([POST /api/v1/verifications])
+    Start([Background job or synchronous POST])
     Prepare[Input preparation]
     IsURL{URL input?}
     Fetch[Resolve and fetch public page]
     FetchOK{Fetch succeeded?}
     Extract[Claim extraction]
     Claims{Claims available?}
-    Plan[Evidence planning and retrieval]
+    Plan[Direct query and retrieval]
     Normalize[Evidence normalization]
     Evidence{Evidence available?}
-    Context[Context analysis]
+    Context[Deterministic context flags]
     A[Verifier A]
     B[Verifier B]
     Judge[Consensus judge]
@@ -189,19 +192,25 @@ Default verifiers run sequentially. With
 <code>GONKA_PARALLEL_VERIFIERS=true</code>, context analysis fans out to A and B, then LangGraph
 joins both before judge.
 
+Default <code>GONKA_REDUCED_CALLS=true</code> uses one deterministic direct query per claim and
+deterministic missing-date context flags. A normal successful run therefore makes five Gonka tasks:
+claim extraction, verifier A, verifier B, consensus judge, and bias audit. Setting it to
+<code>false</code> restores model-based evidence planning and context analysis for seven normal
+tasks. Provider retries, schema repair, and a flagged-audit correction can add bounded attempts.
+
 ### Stage contracts
 
 | Stage | Input | Output | Failure behavior |
 |---|---|---|---|
 | Input preparation | Text or URL | Analysis text/document | Failed URL produces failed result |
-| Claim extraction | Untrusted text | Up to 10 claims | No claim produces failed result |
-| Evidence planning | Claims | Neutral queries | Retain valid user URL evidence |
+| Claim extraction | Untrusted text | Up to 10 uniquely identified claims | No claim produces failed result |
+| Evidence planning | Claims | One direct query per claim by default | Retain valid user URL evidence |
 | Retrieval | Candidate URLs | Fetched evidence | Never use search snippets |
-| Normalization | Evidence | Safe linked evidence | Remove invalid records |
-| Context analysis | Claims/evidence | Context warnings | Continue with explicit error |
-| Verifier A/B | Same evidence | Independent analyses | Preserve successful peer |
+| Normalization | Evidence | Safe, linked, globally bounded evidence | Remove invalid/excess records |
+| Context analysis | Claims/evidence | Deterministic context flags by default | Continue with verifier review |
+| Verifier A/B | Same evidence | Exactly one claim-linked analysis per claim | One schema repair; preserve successful peer |
 | Consensus judge | Valid analyses | Comparison and rationale | No hidden judge fallback |
-| Bias audit | Judge/evidence | Audit status | Unavailable never means passed |
+| Bias audit | Judge/evidence | Semantically consistent audit status | One schema repair; unavailable never means passed |
 | Correction retry | Flagged audit | Revised judgment/audit | Run at most once |
 | Scoring | Structured state | Final result | No generative fallback |
 | Persistence | Result and owner | Stored document | Degrade result on failure |
@@ -217,11 +226,28 @@ stages to run.
 
 ### Text evidence
 
-For text input, claim extraction and planning can run without Brave key, but null retrieval produces
+For text input, claim extraction and query construction can run without Brave key, but null retrieval produces
 no evidence and final status becomes <code>inconclusive</code>. Brave Search is required for current
 live text-to-web evidence path.
 
 ## 7. Graph state and validation
+
+### Output language
+
+<code>VerificationRequest.outputLanguage</code> flows through service state to every Gonka node.
+Supported values: <code>en</code>, <code>ms</code>, and <code>zh-CN</code>; default: English. Each node
+appends shared <code>outputLanguage.md</code> contract to task prompt and includes language code in
+model payload. Existing inference calls handle output language: no translation API, extra model
+call, or database migration.
+
+Only user-facing generated prose changes language. JSON keys, enum values, model/request IDs,
+evidence IDs, URLs, original claims, direct quotations, evidence excerpts, names, dates, numbers,
+and units remain stable. <code>VerificationResult.outputLanguage</code> records report language in
+existing raw result document. Older stored results parse as English.
+
+Frontend translates static labels locally from <code>frontend/i18n.js</code> and stores selection in
+<code>localStorage</code>. Selector updates UI immediately. New verification is required to generate
+report prose in another language, ensuring consensus and bias audit inspect same language user sees.
 
 <code>VerificationGraphState</code> is a TypedDict containing:
 
@@ -241,8 +267,20 @@ Lists produced by parallel branches use additive reducers. Final scoring dedupli
 limitations, and public Gonka request IDs where needed.
 
 Every external structured result is parsed as one JSON object and validated through Pydantic.
-Unknown claim IDs or evidence IDs invalidate relevant model stage. Model <code>&lt;think&gt;</code>
-content and optional JSON fences are removed before validation; hidden reasoning is not exposed.
+Unknown claim IDs or evidence IDs invalidate relevant model stage. Verifiers must return exactly one
+analysis per claim, and every cited evidence ID must be linked to that claim. Duplicate claim IDs,
+duplicate evidence assessments, and inconsistent bias-audit states are rejected. Model
+<code>&lt;think&gt;</code> content and optional JSON fences are removed before validation; hidden
+reasoning is not exposed.
+
+Verifier and bias-audit requests prefer the Gonka structured-output tool. Pydantic definitions are
+inlined and annotation-only schema fields are removed before transmission for adapter
+compatibility. If Gonka rejects a tool request with HTTP 400, the client makes one plain-JSON
+compatibility attempt; strict Pydantic and semantic validation still applies. Invalid JSON, schema
+violations, semantic violations, missing/ambiguous tool output, and <code>max_tokens</code>
+truncation receive at most one targeted repair. Both successful inference receipts remain
+traceable. Repair diagnostics contain fixed categories and sanitized paths, never raw model output.
+A truncation repair raises the output cap to 4,096 tokens.
 
 ## 8. Model architecture
 
@@ -253,7 +291,7 @@ Default roles:
 
 | Role | Default model |
 |---|---|
-| Claim extraction, evidence planning, context | <code>MiniMaxAI/MiniMax-M2.7</code> |
+| Claim extraction; optional full-mode planning/context | <code>MiniMaxAI/MiniMax-M2.7</code> |
 | Verifier A | <code>moonshotai/Kimi-K2.6</code> |
 | Verifier B | <code>MiniMaxAI/MiniMax-M2.7</code> |
 | Consensus judge | <code>deepseek-ai/DeepSeek-V4-Flash-0731</code> |
@@ -271,22 +309,29 @@ Each successful call records:
 - provider response ID;
 - total latency;
 - input/output token counts when returned; and
-- Gonka fallback metadata when returned.
+- Gonka fallback metadata and stop reason when returned.
 
 Raw <code>outputText</code> remains internal and is excluded from API serialization.
 
 ### Provider policies
 
-| Task group | Timeout | Retries after first attempt |
-|---|---:|---:|
-| Orchestration | 30 seconds | 2 |
-| Verifiers | 120 seconds | 1 |
-| Judge | 75 seconds | 1 |
-| Bias audit | 60 seconds | 1 |
+| Task group | Request timeout | Retries after first attempt | Total stage deadline |
+|---|---:|---:|---:|
+| Orchestration | 30 seconds | 2 | — |
+| Verifiers | 120 seconds | 1 | 180 seconds each |
+| Judge | 75 seconds | 1 | — |
+| Bias audit | 60 seconds | 1 | 120 seconds |
 
 Transient statuses are 408, 409, 425, 429, 500, 502, 503, and 504. Other transient network failures
 use bounded exponential delay up to four seconds. HTTP 429 uses <code>Retry-After</code> when valid,
-capped at 60 seconds, or 30 seconds by default.
+capped at 60 seconds, or 30 seconds by default. A structured-output HTTP 400 is handled separately
+with one tool-free compatibility attempt and does not consume the transient retry budget. Context
+analysis uses bounded excerpts and a 1,024-token output cap; failure remains non-blocking.
+
+Verifier and bias-audit stage deadlines include transport retries and the optional schema repair,
+preventing the two retry mechanisms from multiplying without a bound. Recoverable attempts log at
+INFO; exhausted attempts log at WARNING with application request ID, provider receipt when
+available, task, model, timeout, and retry decision.
 
 ## 9. Evidence retrieval architecture
 
@@ -295,8 +340,10 @@ Brave integration has two separate trust steps:
 1. search query returns candidate URLs;
 2. backend independently fetches original public pages.
 
-Search snippets never become evidence. Search calls run concurrently. Candidate fetches use
-concurrency limit five and are deduplicated by URL-derived evidence ID.
+Search snippets never become evidence. Reduced mode builds one query per claim before network
+I/O. Search calls run concurrently. Candidate URLs are selected round-robin across claims;
+unclaimed quota and failed fetches are backfilled. Candidate fetches use concurrency limit five and
+are deduplicated by URL-derived evidence ID.
 
 Safe document fetching:
 
@@ -314,18 +361,33 @@ Safe document fetching:
 
 Evidence preserves URL, title, publisher hostname when available, publication date when known,
 retrieval timestamp, source type, excerpt, claim links, stance, quality dimensions, and limitations.
+Normalization applies adapter-independent default limits of 6 records per claim and 8 records
+total. The global total includes user-provided URL evidence.
 
 Full evidence remains in graph and API state. Model payloads cap each excerpt:
 
-- context and verifiers: 4,000 characters;
-- judge: 2,500 characters;
-- bias audit: 1,500 characters.
+- optional full-mode context and bias audit: 1,500 characters; and
+- verifiers and judge: 2,500 characters.
 
 Truncation is disclosed in model-input limitations.
 
+### Current topic suggestions
+
+Topic suggestions use a separate Brave News Search adapter; they never enter the verification
+evidence pack automatically. The authenticated <code>GET /api/v1/trending-topics</code> route makes
+one bounded search for recent Malaysian news and turns the first three unique headlines into
+optional claim-input suggestions. They are unverified starting points, not evidence or a measured
+popularity ranking.
+
+An in-process 15-minute cache and an async lock make concurrent callers share one Brave request.
+Provider failures return safe examples cached for five minutes. The frontend then stores the
+response in per-user <code>sessionStorage</code>, avoiding another endpoint call for that user in the
+same browser-tab session. No topic data or Brave credential is written to Supabase or browser
+configuration.
+
 ## 10. Deterministic scoring
 
-Formula version: <code>truthscope-evidence-v1</code>.
+Formula version: <code>truthscope-evidence-v2</code>.
 
 Each evidence quality weight is:
 
@@ -338,23 +400,30 @@ Each directional stance maps into <code>[-1, 1]</code>. Supports is positive, co
 negative, and neutral/unclear is zero. Valid verifier evidence assessments take precedence over
 initial neutral retrieval stance.
 
-~~~text
-support value = sum(quality × signed stance) / sum(directional quality)
-Truth Score = 50 + 50 × support value
+Scoring first calculates support, quality, consistency, and evidence sufficiency independently for
+each claim. Shared evidence assessments are keyed by both claim ID and evidence ID. Claim-level
+values are then averaged with equal claim weight, so a claim with many sources cannot drown out an
+unresolved or contradicted claim.
 
-evidence sufficiency = min(directional evidence count / 2, 1)
+~~~text
+claim support = sum(quality × claim-specific signed stance) / sum(directional quality)
+claim Truth Score = 50 + 50 × claim support
+Truth Score = mean(claim Truth Scores)
+
+claim evidence sufficiency = min(claim directional evidence count / 2, 1)
+evidence sufficiency = mean(claim evidence sufficiencies)
 
 Confidence = 100 × evidence sufficiency × (
-  0.35 × average evidence quality
+  0.35 × mean claim evidence quality
   + 0.25 × claim coverage
-  + 0.20 × cross-source consistency
-  + 0.20 × cross-model agreement
+  + 0.20 × mean claim consistency
+  + 0.20 × within-claim cross-model agreement
 )
 ~~~
 
 Confidence is reduced when:
 
-- only one verifier analysis exists;
+- any claim lacks two distinct served verifier models;
 - bias audit is absent, unavailable, or flagged; or
 - context analysis detects stale or suspected truncated evidence.
 
@@ -367,6 +436,10 @@ Confidence below 40 forces <code>mixed_or_inconclusive</code>. Otherwise:
 | 40–60 | <code>mixed_or_inconclusive</code> |
 | 61–80 | <code>mostly_supported</code> |
 | 81–100 | <code>strongly_supported</code> |
+
+A directional verdict additionally requires two distinct served verifier models for every claim
+and a passed bias audit. If either requirement is missing, the public verdict remains
+<code>mixed_or_inconclusive</code>; numeric Truth Score and confidence remain diagnostic.
 
 Judge output informs transparency and disagreement, but final public score and verdict come from
 deterministic evidence calculation. Political identity never enters formula.
@@ -400,13 +473,17 @@ process restart. Default protected HTTP routes still require configured Supabase
 
 1. Supabase session enables Verify and History controls.
 2. User submits up to 800 characters through browser form.
-3. Frontend sends input to backend with Bearer token.
-4. Expandable activity panel starts elapsed timer.
-5. UI displays time-based estimated stages because POST exposes no live node events.
-6. Backend returns complete <code>VerificationResult</code>.
-7. UI replaces estimates with confirmed inference records and failures.
-8. UI renders score, claims, models, analysis, evidence, disagreement, and notices.
-9. History reloads, then page scrolls to result.
+3. Frontend starts <code>POST /verification-jobs</code> with Bearer token.
+4. Backend returns an opaque job ID and continues work in a background task.
+5. Frontend stores job ID/start time under the user ID and polls the protected job route.
+6. Refresh restores elapsed tracking and polling from local storage.
+7. UI displays time-based estimated stages because polling exposes job state, not node events.
+8. Completed job returns <code>VerificationResult</code>; UI replaces estimates with confirmed records.
+9. UI renders result and reloads History.
+
+The process-local registry is sufficient for the one-worker hackathon deployment. It survives
+browser refresh, not backend restart, and is not shared between workers. Durable production jobs
+would require an external queue/store and deployment coordination.
 
 If first API response is 401, frontend requests one Supabase session refresh and retries once. A
 second 401 signs out local session.

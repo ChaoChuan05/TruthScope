@@ -7,8 +7,15 @@ from app.agents.nodes.biasAuditor import createBiasAuditNode
 from app.agents.nodes.claimExtractor import createClaimExtractionNode
 from app.agents.nodes.common import AsyncNode, NodeUpdate
 from app.agents.nodes.consensusJudge import createConsensusNode
-from app.agents.nodes.contextAnalyzer import createContextAnalysisNode
-from app.agents.nodes.evidencePlanner import createEvidencePlanningNode, evidenceNormalization
+from app.agents.nodes.contextAnalyzer import (
+    createContextAnalysisNode,
+    deterministicContextAnalysis,
+)
+from app.agents.nodes.evidencePlanner import (
+    createDirectEvidencePlanningNode,
+    createEvidenceNormalizationNode,
+    createEvidencePlanningNode,
+)
 from app.agents.nodes.inputPreparation import createInputPreparationNode
 from app.agents.nodes.verifier import createVerifierNode
 from app.agents.state import VerificationGraphState
@@ -22,7 +29,7 @@ from app.schemas.common import BiasAuditStatus, InputType, Verdict, Verification
 from app.schemas.verification import VerificationResult
 from app.services.scoringService import calculateModelAgreement, calculateVerificationScore
 
-PROMPT_VERSION = "truthscope-prompts-v2"
+PROMPT_VERSION = "truthscope-prompts-v5"
 
 
 def _asRunnable(node: AsyncNode) -> RunnableLambda[VerificationGraphState, NodeUpdate]:
@@ -45,6 +52,12 @@ class VerificationWorkflow:
         orchestratorModel: str | None = None,
         biasAuditorModel: str | None = None,
         parallelVerifiers: bool = False,
+        reducedGonkaCalls: bool = False,
+        verifierStageTimeoutSeconds: float = 180.0,
+        auditStageTimeoutSeconds: float = 120.0,
+        maxEvidenceQueriesPerClaim: int = 3,
+        maxEvidencePerClaim: int = 12,
+        maxTotalEvidence: int = 20,
         documentFetcher: DocumentFetcherProtocol | None = None,
     ) -> None:
         workflowModel = orchestratorModel or modelA
@@ -63,17 +76,35 @@ class VerificationWorkflow:
         )
         graphBuilder.add_node(
             "evidencePlanningAndRetrieval",
-            _asRunnable(createEvidencePlanningNode(gonkaClient, retriever, workflowModel)),
+            _asRunnable(
+                createDirectEvidencePlanningNode(retriever)
+                if reducedGonkaCalls
+                else createEvidencePlanningNode(
+                    gonkaClient,
+                    retriever,
+                    workflowModel,
+                    maxQueriesPerClaim=maxEvidenceQueriesPerClaim,
+                )
+            ),
             input_schema=VerificationGraphState,
         )
         graphBuilder.add_node(
             "evidenceNormalization",
-            _asRunnable(evidenceNormalization),
+            _asRunnable(
+                createEvidenceNormalizationNode(
+                    maxEvidencePerClaim=maxEvidencePerClaim,
+                    maxTotalEvidence=maxTotalEvidence,
+                )
+            ),
             input_schema=VerificationGraphState,
         )
         graphBuilder.add_node(
             "contextAnalyzer",
-            _asRunnable(createContextAnalysisNode(gonkaClient, workflowModel)),
+            _asRunnable(
+                deterministicContextAnalysis
+                if reducedGonkaCalls
+                else createContextAnalysisNode(gonkaClient, workflowModel)
+            ),
             input_schema=VerificationGraphState,
         )
         graphBuilder.add_node(
@@ -83,6 +114,7 @@ class VerificationWorkflow:
                     gonkaClient,
                     taskName="verifierModelA",
                     modelName=modelA,
+                    stageTimeoutSeconds=verifierStageTimeoutSeconds,
                 )
             ),
             input_schema=VerificationGraphState,
@@ -94,6 +126,7 @@ class VerificationWorkflow:
                     gonkaClient,
                     taskName="verifierModelB",
                     modelName=modelB,
+                    stageTimeoutSeconds=verifierStageTimeoutSeconds,
                 )
             ),
             input_schema=VerificationGraphState,
@@ -105,7 +138,13 @@ class VerificationWorkflow:
         )
         graphBuilder.add_node(
             "biasAudit",
-            _asRunnable(createBiasAuditNode(gonkaClient, auditModel)),
+            _asRunnable(
+                createBiasAuditNode(
+                    gonkaClient,
+                    auditModel,
+                    stageTimeoutSeconds=auditStageTimeoutSeconds,
+                )
+            ),
             input_schema=VerificationGraphState,
         )
         graphBuilder.add_node(
@@ -115,7 +154,14 @@ class VerificationWorkflow:
         )
         graphBuilder.add_node(
             "biasAuditRetry",
-            _asRunnable(createBiasAuditNode(gonkaClient, auditModel, isRetry=True)),
+            _asRunnable(
+                createBiasAuditNode(
+                    gonkaClient,
+                    auditModel,
+                    isRetry=True,
+                    stageTimeoutSeconds=auditStageTimeoutSeconds,
+                )
+            ),
             input_schema=VerificationGraphState,
         )
         graphBuilder.add_node(
@@ -221,7 +267,12 @@ async def deterministicScoring(state: VerificationGraphState) -> NodeUpdate:
     elif not evidence:
         status = VerificationStatus.INCONCLUSIVE
         limitations.append("No traceable evidence was available.")
-    elif judgeResult is None or biasAudit is None or errors:
+    elif (
+        judgeResult is None
+        or biasAudit is None
+        or biasAudit.status == BiasAuditStatus.UNAVAILABLE
+        or errors
+    ):
         status = VerificationStatus.DEGRADED
         limitations.append("One or more verification stages were unavailable.")
     else:
@@ -238,6 +289,7 @@ async def deterministicScoring(state: VerificationGraphState) -> NodeUpdate:
         userId=state.get("userId"),
         originalInput=state["originalInput"],
         inputType=state["inputType"],
+        outputLanguage=state["outputLanguage"],
         normalizedText=state.get("normalizedText", state["originalInput"]),
         claims=claims,
         evidence=evidence,

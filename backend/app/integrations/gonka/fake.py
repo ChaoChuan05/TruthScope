@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from app.core.exceptions import GonkaUnavailableError
 from app.schemas.agentOutput import GonkaInferenceRecord
 
-type ScriptedValue = Mapping[str, object] | Exception
+type ScriptedValue = Mapping[str, object] | str | Exception
 
 
 class ScriptedGonkaClient:
@@ -25,8 +25,11 @@ class ScriptedGonkaClient:
         model: str,
         systemPrompt: str,
         inputPayload: Mapping[str, object],
+        applicationRequestId: str | None = None,
+        outputSchema: Mapping[str, object] | None = None,
+        maxTokens: int | None = None,
     ) -> GonkaInferenceRecord:
-        del systemPrompt
+        del systemPrompt, applicationRequestId, outputSchema, maxTokens
         self.calls.append((taskName, inputPayload))
         self.callCounts[taskName] += 1
         taskResponses = self.responses.get(taskName)
@@ -36,6 +39,7 @@ class ScriptedGonkaClient:
         if isinstance(response, Exception):
             raise response
         requestId = f"fake-{taskName}-{self.callCounts[taskName]}"
+        outputText = response if isinstance(response, str) else json.dumps(response)
         return GonkaInferenceRecord(
             taskName=taskName,
             requestedModel=model,
@@ -43,7 +47,7 @@ class ScriptedGonkaClient:
             requestId=requestId,
             providerResponseId=f"message-{requestId}",
             latencyMs=0,
-            outputText=json.dumps(response),
+            outputText=outputText,
         )
 
 
@@ -57,6 +61,17 @@ class UnavailableGonkaClient:
         model: str,
         systemPrompt: str,
         inputPayload: Mapping[str, object],
+        applicationRequestId: str | None = None,
+        outputSchema: Mapping[str, object] | None = None,
+        maxTokens: int | None = None,
     ) -> GonkaInferenceRecord:
-        del taskName, model, systemPrompt, inputPayload
+        del (
+            taskName,
+            model,
+            systemPrompt,
+            inputPayload,
+            applicationRequestId,
+            outputSchema,
+            maxTokens,
+        )
         raise GonkaUnavailableError("Gonka API key is not configured.")

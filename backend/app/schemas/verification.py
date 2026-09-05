@@ -14,6 +14,7 @@ from app.schemas.agentOutput import (
 from app.schemas.common import (
     ClaimType,
     InputType,
+    OutputLanguage,
     StrictSchema,
     Verdict,
     VerificationStatus,
@@ -35,6 +36,7 @@ class Claim(StrictSchema):
 class VerificationRequest(StrictSchema):
     input: str = Field(min_length=1, max_length=5000)
     inputType: InputType | None = None
+    outputLanguage: OutputLanguage = OutputLanguage.ENGLISH
 
     @field_validator("input")
     @classmethod
@@ -76,6 +78,7 @@ class VerificationResult(StrictSchema):
     userId: str | None = Field(default=None, exclude=True)
     originalInput: str
     inputType: InputType
+    outputLanguage: OutputLanguage = OutputLanguage.ENGLISH
     normalizedText: str
     claims: list[Claim] = Field(default_factory=list)
     evidence: list[EvidenceRecord] = Field(default_factory=list)

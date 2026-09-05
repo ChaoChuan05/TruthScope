@@ -29,7 +29,7 @@ app/
 ├── main.py                     Application factory, middleware, dependencies, lifecycle
 ├── api/
 │   ├── dependencies.py         Bearer authentication and service dependencies
-│   └── v1/verifications.py     Health, verification, result, and evidence routes
+│   └── v1/                     Health, topics, verification, result, and evidence routes
 ├── agents/
 │   ├── graph.py                Compiled LangGraph and conditional routing
 │   ├── state.py                Typed shared graph state
@@ -58,8 +58,11 @@ Protected routes:
 
 ~~~text
 POST /api/v1/verifications
+POST /api/v1/verification-jobs
+GET  /api/v1/verification-jobs/{jobId}
 GET  /api/v1/verifications/{verificationId}
 GET  /api/v1/verifications/{verificationId}/evidence
+GET  /api/v1/trending-topics
 ~~~
 
 Public route:
@@ -102,6 +105,15 @@ frontend/backend stack with root <code>compose.yaml</code>. Container and AWS EC
 Verifier A, verifier B, and consensus judge model IDs must be distinct. Startup rejects duplicate
 IDs. Other model availability depends on Gonka account routing.
 
+The frontend uses the resumable job endpoints. A job continues after page refresh and the browser
+stores only its opaque job ID and start time. The job registry is process-local: a backend restart
+or multiple workers require a shared job store, which this hackathon deployment does not include.
+
+<code>GONKA_REDUCED_CALLS=true</code> is the default latency mode. It replaces generative evidence
+planning and context analysis with deterministic steps, reducing the normal workflow from seven to
+five Gonka tasks while retaining claim extraction, two independent verifiers, consensus judge, and
+bias audit.
+
 ## Result semantics
 
 Backend uses four workflow statuses:
@@ -115,6 +127,19 @@ Backend uses four workflow statuses:
 Truth Score describes collected evidence, not objective truth probability. Confidence describes
 evidence quality, claim coverage, consistency, context checks, and model agreement. Final API output
 contains concise summaries, never hidden chain-of-thought or raw provider output.
+
+Clients may request <code>outputLanguage</code> as <code>en</code>, <code>ms</code>, or
+<code>zh-CN</code>; English is default. Shared language contract reaches every Gonka stage, so
+user-facing prose follows selection without separate translation service. Structured keys, enum
+values, identifiers, URLs, and original source wording remain stable. Result stores selected
+language for history replay; existing stored results without field default to English.
+
+Scoring formula <code>truthscope-evidence-v2</code> calculates claim-specific values, then gives each
+claim equal weight. A directional verdict requires two distinct served verifier models for every
+claim and a passed bias audit; otherwise verdict stays <code>mixed_or_inconclusive</code>. Verifier
+and bias-audit responses prefer forced structured output with one bounded repair. Tool schemas are
+normalized for router compatibility; an HTTP 400 tool rejection gets one plain-JSON compatibility
+attempt. Total stage deadlines prevent repair and transport retries from multiplying without limit.
 
 ## Development checks
 

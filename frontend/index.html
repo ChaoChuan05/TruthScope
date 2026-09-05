@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark light">
   <title>TruthScope — Evidence-first verification</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230a1220'/%3E%3Ccircle cx='32' cy='32' r='20' fill='none' stroke='%2333d6bb' stroke-width='7'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23ff6b4a'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -18,48 +19,67 @@
       <div class="logo-mark" aria-hidden="true"></div>
       <div class="logo-text">Truth<span>Scope</span></div>
     </a>
-    <nav aria-label="Primary navigation">
+    <nav aria-label="Primary navigation" data-i18n-aria-label="primaryNavigation">
       <ul>
-        <li class="auth-only" hidden><a href="#console">Verify now</a></li>
-        <li class="auth-only" hidden><a href="#history">History</a></li>
+        <li class="auth-only" hidden><a href="#console" data-i18n="navVerify">Verify now</a></li>
+        <li class="auth-only" hidden><a href="#history" data-i18n="navHistory">History</a></li>
       </ul>
     </nav>
     <div class="header-actions">
+      <label class="language-control" for="languageSelect">
+        <span class="sr-only" data-i18n="languageLabel">Language</span>
+        <span aria-hidden="true">文/A</span>
+        <select id="languageSelect" aria-label="Language" data-i18n-aria-label="languageLabel">
+          <option value="en">English</option>
+          <option value="ms">Bahasa Melayu</option>
+          <option value="zh-CN">中文</option>
+        </select>
+      </label>
       <button class="theme-toggle" id="themeToggle" type="button" aria-label="Use light theme">
         <span class="theme-icon" aria-hidden="true">☀</span><span class="theme-label">Light</span>
       </button>
-      <button id="openLoginBtn" class="auth-trigger" type="button">Sign in</button>
+      <button id="openLoginBtn" class="auth-trigger" type="button" data-i18n="signIn">Sign in</button>
       <div id="userPanel" class="user-panel" hidden>
         <img id="userAvatar" class="user-avatar" src="" alt="" referrerpolicy="no-referrer" hidden>
         <span id="userDisplayName">Account</span>
-        <button id="logoutBtn" class="logout-btn" type="button">Sign out</button>
+        <button id="logoutBtn" class="logout-btn" type="button" data-i18n="signOut">Sign out</button>
       </div>
     </div>
   </header>
 
   <section class="hero" id="console">
-    <div class="eyebrow"><span class="dot"></span> Powered by Gonka-hosted inference</div>
-    <h1 class="headline">AI fact check</h1>
-    <p class="sub">
+    <div class="eyebrow"><span class="dot"></span><span data-i18n="eyebrow">Powered by Gonka-hosted inference</span></div>
+    <h1 class="headline" data-i18n="heroTitle">AI fact check</h1>
+    <p class="sub" data-i18n-html="heroDescription">
       Malaysian politics moves on soundbites and screenshots. <b>TruthScope</b> checks claims
       against public evidence, compares independent models, and exposes disagreements and request
       metadata.
     </p>
     <div class="signed-out-prompt" id="signedOutPrompt">
-      <p>Sign in to verify claims and access private verification history.</p>
-      <button class="btn-check centered-sign-in" id="promptLoginBtn" type="button">Sign in to continue</button>
+      <p data-i18n="signedOutPrompt">Sign in to verify claims and access private verification history.</p>
+      <button class="btn-check centered-sign-in" id="promptLoginBtn" type="button" data-i18n="signInContinue">Sign in to continue</button>
     </div>
     <div class="console auth-only" hidden>
-      <div class="console-label"><span>PASTE A PUBLIC LINK OR CLAIM</span><span id="charcount">0 / 800</span></div>
-      <textarea id="claimInput" maxlength="800" placeholder="e.g. Malaysia reported a population of 34.1 million in 2024." aria-label="Claim or public URL"></textarea>
+      <div class="console-label">
+        <label for="claimInput" data-i18n="inputLabel">PASTE A PUBLIC LINK OR CLAIM</label>
+        <span id="charcount">0 / 800</span>
+      </div>
+      <textarea id="claimInput" maxlength="800" placeholder="e.g. Malaysia reported a population of 34.1 million in 2024." data-i18n-placeholder="inputPlaceholder" aria-describedby="inputHelp"></textarea>
       <div class="console-actions">
-        <button class="btn-check" id="checkBtn" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.6" y2="16.6"></line></svg>
-          <span id="checkLabel">Run Verification</span>
-        </button>
+        <div class="input-context">
+          <span class="input-type-badge" id="inputTypeBadge">Text claim</span>
+          <span class="input-help" id="inputHelp" data-i18n-html="inputShortcut"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> to run</span>
+        </div>
+        <div class="console-buttons">
+          <button class="btn-secondary" id="clearInputBtn" type="button" disabled data-i18n="clear">Clear</button>
+          <button class="btn-check" id="checkBtn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.6" y2="16.6"></line></svg>
+            <span id="checkLabel" data-i18n="runVerification">Run Verification</span>
+          </button>
+        </div>
       </div>
     </div>
-    <section class="verification-loading" id="verificationLoading" aria-label="Verification progress" hidden>
+    <section class="verification-loading" id="verificationLoading" aria-label="Verification progress" data-i18n-aria-label="verificationProgress" hidden>
       <div class="pipeline-head">
         <div class="pipeline-heading">
           <span class="pipeline-pulse" aria-hidden="true"></span>
@@ -68,84 +88,111 @@
             <div class="pipeline-elapsed" id="pipelineElapsed">Worked for 0s</div>
           </div>
         </div>
-        <button class="pipeline-toggle" id="pipelineToggle" type="button" aria-expanded="true" aria-controls="pipelineDetails">Hide details</button>
+        <div class="pipeline-actions">
+          <button class="pipeline-stop" id="stopWaitingBtn" type="button" data-i18n="stopWaiting">Stop waiting</button>
+          <button class="pipeline-toggle" id="pipelineToggle" type="button" aria-expanded="true" aria-controls="pipelineDetails" data-i18n="hideDetails">Hide details</button>
+        </div>
       </div>
       <div class="pipeline-details" id="pipelineDetails">
         <div class="loading-status" id="loadingStatus" role="status" aria-live="polite">Connecting to verification engine</div>
         <div class="pipeline-steps" id="pipelineSteps" role="list"></div>
         <div class="loading-progress" aria-hidden="true"><div class="loading-progress-bar" id="pipelineProgress"></div></div>
-        <div class="loading-note">Stage timing is estimated until backend returns confirmed Gonka records.</div>
+        <div class="loading-note" data-i18n="pipelineNote">Stages are estimates because the backend returns one final response. You can stop waiting; processing may still finish and appear in History.</div>
       </div>
     </section>
     <div class="verification-message" id="verificationMessage" role="alert" hidden></div>
-    <div class="examples auth-only" hidden>
-      <button class="chip" type="button" data-ex="population">Malaysia population claim</button>
-      <button class="chip" type="button" data-ex="fuel">Fuel subsidy rumour</button>
-      <button class="chip" type="button" data-ex="quote">Parliament quotation</button>
+    <div class="examples auth-only" hidden aria-labelledby="topicSuggestionsLabel">
+      <span class="examples-label" id="topicSuggestionsLabel" data-i18n="tryExample">Try an example</span>
+      <div class="example-chips" id="trendingTopics"></div>
+      <span class="sr-only" id="trendingTopicsStatus" role="status" aria-live="polite"></span>
     </div>
   </section>
 
   <main>
     <section id="results" aria-labelledby="resultsTitle" hidden>
-      <div class="section-head"><span class="idx mono">01</span><h2 id="resultsTitle">Verification Result</h2><div class="rule"></div></div>
+      <div class="section-head"><span class="idx mono">01</span><h2 id="resultsTitle" data-i18n="verificationResult">Verification Result</h2><div class="rule"></div></div>
+      <div class="result-notices" id="resultNotices" role="status" aria-live="polite" hidden></div>
       <div class="score-panel">
         <div class="dial-wrap">
-          <svg width="200" height="130" viewBox="0 0 200 130" aria-label="Truth Score">
+          <svg width="200" height="130" viewBox="0 0 200 130" role="img" aria-labelledby="scoreGaugeTitle scoreGaugeDescription">
+            <title id="scoreGaugeTitle" data-i18n="scoreGaugeTitle">Evidence support score</title>
+            <desc id="scoreGaugeDescription" data-i18n="scoreGaugeDescription">A score from zero to one hundred describing support in the collected evidence. It is not a probability of truth.</desc>
             <defs><linearGradient id="arcGrad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#ff6b4a"></stop><stop offset="50%" stop-color="#f2b544"></stop><stop offset="100%" stop-color="#33d6bb"></stop></linearGradient></defs>
             <path d="M 15 110 A 85 85 0 0 1 185 110" fill="none" stroke="var(--ring-track)" stroke-width="14" stroke-linecap="round"></path>
             <path d="M 15 110 A 85 85 0 0 1 185 110" fill="none" stroke="url(#arcGrad)" stroke-width="14" stroke-linecap="round" stroke-dasharray="267" stroke-dashoffset="267" id="arcFg"></path>
             <g id="needle" style="transform-origin:100px 110px;transform:rotate(-90deg)"><line x1="100" y1="110" x2="100" y2="38" stroke="var(--paper)" stroke-width="3" stroke-linecap="round"></line><circle cx="100" cy="110" r="6" fill="var(--paper)"></circle></g>
           </svg>
           <div class="dial-val"><span id="scoreNum">—</span><span>%</span></div>
-          <div class="dial-sub">Truth Score</div>
+          <div class="dial-sub" data-i18n="evidenceSupport">Evidence Support</div>
+          <p class="score-explanation" data-i18n="scoreExplanation">Support in collected evidence—not a probability of truth.</p>
         </div>
         <div class="score-info">
           <div class="verdict-pill" id="verdictPill">INCONCLUSIVE</div>
-          <div class="claim-label">Extracted Claims</div>
+          <div class="claim-label" data-i18n="extractedClaims">Extracted Claims</div>
           <div class="claim-text" id="claimText"></div>
-          <div class="meta-row"><span>Checked <span class="mono" id="checkTime">—</span></span><span id="requestCount">0 Gonka request IDs</span><span id="confidenceScore">Confidence —</span></div>
+          <div class="result-summary"><h3 data-i18n="evidenceShows">What the evidence shows</h3><p id="resultSummary" data-i18n="summaryUnavailable">Summary unavailable.</p></div>
+          <div class="meta-row"><span><span data-i18n="checked">Checked</span> <span class="mono" id="checkTime">—</span></span><span id="requestCount">0 Gonka request IDs</span><span id="confidenceScore">Confidence —</span></div>
         </div>
       </div>
-      <div class="result-notices" id="resultNotices" hidden></div>
-      <div class="section-head"><span class="idx mono">02</span><h2>Multi-Model Consensus</h2><div class="rule"></div></div>
-      <div class="model-grid" id="modelGrid"></div>
-      <div class="section-head"><span class="idx mono">03</span><h2>Analysis Summary</h2><div class="rule"></div></div>
-      <div class="trace" id="analysisTrace"></div>
-      <div class="section-head"><span class="idx mono">04</span><h2>Sources &amp; Disagreement</h2><div class="rule"></div></div>
-      <div class="two-col">
-        <div class="panel"><h3 class="panel-title">Evidence Sources</h3><p class="panel-subtitle">Collected sources with preserved provenance</p><div id="evidenceList"></div></div>
-        <div class="panel disagree-panel"><h3 id="disagreementTitle">Model comparison</h3><div id="disagreementList"></div><div class="disagree-conclusion" id="judgeSummary"></div></div>
+      <p class="sr-only" id="scoreAnnouncement" aria-live="polite"></p>
+
+      <div class="section-head"><span class="idx mono">02</span><h2 data-i18n="evidence">Evidence</h2><div class="rule"></div></div>
+      <div class="panel evidence-panel">
+        <div class="panel-heading"><div><h3 class="panel-title" data-i18n="evidenceSources">Evidence sources</h3><p class="panel-subtitle" data-i18n="evidenceSubtitle">Grouped by how the independent verifiers assessed each source</p></div><span class="evidence-total" id="evidenceCount">0 sources</span></div>
+        <div id="evidenceList"></div>
       </div>
+
+      <div class="section-head"><span class="idx mono">03</span><h2 data-i18n="claimBreakdown">Claim Breakdown</h2><div class="rule"></div></div>
+      <div class="claim-breakdown" id="claimBreakdown"></div>
+
+      <div class="section-head"><span class="idx mono">04</span><h2 data-i18n="modelComparison">Model Comparison</h2><div class="rule"></div></div>
+      <div class="panel comparison-panel"><h3 id="disagreementTitle" data-i18n="modelsAgree">Where models agree</h3><div id="disagreementList"></div></div>
+
+      <details class="technical-details">
+        <summary><span data-i18n="howVerified">How this was verified</span><small data-i18n="technicalSubtitle">Models, audit summaries, and Gonka request IDs</small></summary>
+        <div class="technical-content">
+          <h3 data-i18n="multiModelConsensus">Multi-model consensus</h3>
+          <div class="model-grid" id="modelGrid"></div>
+          <h3 data-i18n="analysisTrace">Analysis trace</h3>
+          <div class="trace" id="analysisTrace"></div>
+        </div>
+      </details>
     </section>
 
     <section class="history-section auth-only" id="history" aria-labelledby="historyTitle" hidden>
-      <div class="section-head"><span class="idx mono">05</span><h2 id="historyTitle">Verification History</h2><div class="rule"></div></div>
+      <div class="section-head"><span class="idx mono">05</span><h2 id="historyTitle" data-i18n="verificationHistory">Verification History</h2><div class="rule"></div></div>
       <div class="panel history-panel">
-        <div class="history-heading"><div><h3 class="panel-title">Recent verifications</h3><p class="panel-subtitle">Private results saved to your Supabase account · <span id="historyCount">0 records</span></p></div><button class="history-refresh" id="historyRefresh" type="button">Refresh</button></div>
+        <div class="history-heading"><div><h3 class="panel-title" data-i18n="yourVerifications">Your verifications</h3><p class="panel-subtitle"><span data-i18n="privateHistory">Private results saved to your account</span> · <span id="historyCount">0 records</span></p></div><button class="history-refresh" id="historyRefresh" type="button" data-i18n="refresh">Refresh</button></div>
+        <div class="history-controls">
+          <label class="history-search"><span class="sr-only" data-i18n="searchHistory">Search verification history</span><input id="historySearch" type="search" placeholder="Search claims…" data-i18n-placeholder="searchPlaceholder" autocomplete="off"></label>
+          <label class="history-filter"><span class="sr-only" data-i18n="filterHistory">Filter history by verdict</span><select id="historyVerdictFilter"><option value="all" data-i18n="allVerdicts">All verdicts</option><option value="supported" data-i18n="supported">Supported</option><option value="inconclusive" data-i18n="inconclusive">Inconclusive</option><option value="contradicted" data-i18n="contradicted">Contradicted</option><option value="degraded" data-i18n="degraded">Degraded</option></select></label>
+        </div>
         <div class="history-list" id="historyList" aria-live="polite"></div>
+        <button class="history-load-more" id="historyLoadMore" type="button" hidden data-i18n="loadMore">Load more</button>
       </div>
     </section>
   </main>
 
-  <footer>TruthScope — evidence-first verification through Gonka-hosted models. Scores describe collected evidence, not guaranteed truth.</footer>
+  <footer data-i18n="footer">TruthScope — evidence-first verification through Gonka-hosted models. Scores describe collected evidence, not guaranteed truth.</footer>
 
   <div id="loginModal" class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="loginTitle" hidden>
     <canvas id="loginWaveCanvas" class="login-wave-background" aria-hidden="true"></canvas><div class="login-wave-vignette"></div>
     <div class="auth-card">
-      <button id="closeLoginBtn" class="auth-close" type="button" aria-label="Close login window">×</button>
-      <div class="auth-brand"><div class="logo-mark"></div><div class="auth-kicker">SECURE ACCESS</div></div>
-      <h2 id="loginTitle">Sign in to TruthScope</h2>
-      <p class="auth-description">Use Google to verify claims and access private history.</p>
-      <div class="login-wave-stage" aria-hidden="true"><canvas id="loginGlyphWave"></canvas><div class="login-wave-scanline"></div><div class="login-wave-label"><span class="login-signal-dot"></span>IDENTITY SIGNAL // SCRAMBLED</div></div>
-      <button id="googleLoginBtn" class="google-login-btn" type="button"><span class="google-mark" aria-hidden="true">G</span>Continue with Google</button>
+      <button id="closeLoginBtn" class="auth-close" type="button" aria-label="Close login window" data-i18n-aria-label="closeLogin">×</button>
+      <div class="auth-brand"><div class="logo-mark"></div><div class="auth-kicker" data-i18n="secureAccess">SECURE ACCESS</div></div>
+      <h2 id="loginTitle" data-i18n="loginTitle">Sign in to TruthScope</h2>
+      <p class="auth-description" data-i18n="loginDescription">Use Google to verify claims and access private history.</p>
+      <div class="login-wave-stage" aria-hidden="true"><canvas id="loginGlyphWave"></canvas><div class="login-wave-scanline"></div><div class="login-wave-label"><span class="login-signal-dot"></span><span data-i18n="identitySignal">IDENTITY SIGNAL // SCRAMBLED</span></div></div>
+      <button id="googleLoginBtn" class="google-login-btn" type="button"><span class="google-mark" aria-hidden="true">G</span><span data-i18n="continueGoogle">Continue with Google</span></button>
       <p id="authMessage" class="auth-message" aria-live="polite"></p>
-      <p class="auth-privacy">TruthScope receives basic profile and email data from Google through Supabase Auth.</p>
+      <p class="auth-privacy" data-i18n="authPrivacy">TruthScope receives basic profile and email data from Google through Supabase Auth.</p>
     </div>
   </div>
 
   <script src="config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="login-wave.js"></script>
+  <script src="i18n.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

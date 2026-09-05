@@ -5,7 +5,7 @@ RUN rm -f /etc/nginx/conf.d/default.conf \
     && chown -R nginx:nginx /opt/truthscope /usr/share/nginx/html
 
 COPY nginx.conf /etc/nginx/nginx.conf
-COPY --chown=nginx:nginx index.html style.css script.js login-wave.js oauth-test.html \
+COPY --chown=nginx:nginx index.html style.css script.js i18n.js login-wave.js oauth-test.html \
     /usr/share/nginx/html/
 COPY --chown=nginx:nginx config.template.js /opt/truthscope/config.template.js
 COPY --chmod=755 docker-entrypoint.d/40-truthscope-config.sh \

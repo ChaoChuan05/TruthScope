@@ -23,6 +23,7 @@ from app.integrations.retrieval.client import (
     NullEvidenceRetriever,
     UrlDocumentFetcher,
 )
+from app.integrations.retrieval.trendingTopics import BraveNewsTopicsProvider
 from app.integrations.supabase.auth import SupabaseAuthClient
 from app.integrations.supabase.client import (
     InMemoryVerificationRepository,
@@ -30,6 +31,8 @@ from app.integrations.supabase.client import (
     VerificationRepositoryProtocol,
 )
 from app.integrations.supabase.gateway import SupabaseRestGateway
+from app.services.trendingTopicsService import TrendingTopicsService
+from app.services.verificationJobService import VerificationJobService
 from app.services.verificationService import VerificationService
 
 
@@ -44,6 +47,19 @@ def buildDefaultService(settings: Settings) -> tuple[VerificationService, list[o
     documentFetcher = UrlDocumentFetcher()
     closableResources.append(documentFetcher)
     retriever: EvidenceRetrieverProtocol
+    maxEvidenceQueriesPerClaim = (
+        1 if settings.GONKA_REDUCED_CALLS else settings.MAX_EVIDENCE_QUERIES_PER_CLAIM
+    )
+    maxEvidencePerClaim = (
+        min(settings.MAX_EVIDENCE_PER_CLAIM, 6)
+        if settings.GONKA_REDUCED_CALLS
+        else settings.MAX_EVIDENCE_PER_CLAIM
+    )
+    maxTotalEvidence = (
+        min(settings.MAX_TOTAL_EVIDENCE, 8)
+        if settings.GONKA_REDUCED_CALLS
+        else settings.MAX_TOTAL_EVIDENCE
+    )
     if settings.searchConfigured:
         retriever = BraveSearchEvidenceRetriever(
             apiKey=settings.BRAVE_SEARCH_API_KEY or "",
@@ -52,7 +68,9 @@ def buildDefaultService(settings: Settings) -> tuple[VerificationService, list[o
             country=settings.BRAVE_SEARCH_COUNTRY,
             searchLanguage=settings.BRAVE_SEARCH_LANGUAGE,
             resultsPerQuery=settings.BRAVE_SEARCH_RESULTS_PER_QUERY,
-            maxEvidencePerClaim=settings.MAX_EVIDENCE_PER_CLAIM,
+            maxQueriesPerClaim=maxEvidenceQueriesPerClaim,
+            maxEvidencePerClaim=maxEvidencePerClaim,
+            maxTotalEvidence=maxTotalEvidence,
         )
         closableResources.append(retriever)
     else:
@@ -64,6 +82,12 @@ def buildDefaultService(settings: Settings) -> tuple[VerificationService, list[o
         orchestratorModel=settings.GONKA_ORCHESTRATOR_MODEL,
         biasAuditorModel=settings.GONKA_BIAS_AUDITOR_MODEL,
         parallelVerifiers=settings.GONKA_PARALLEL_VERIFIERS,
+        reducedGonkaCalls=settings.GONKA_REDUCED_CALLS,
+        verifierStageTimeoutSeconds=settings.GONKA_VERIFIER_STAGE_TIMEOUT_SECONDS,
+        auditStageTimeoutSeconds=settings.GONKA_AUDIT_STAGE_TIMEOUT_SECONDS,
+        maxEvidenceQueriesPerClaim=maxEvidenceQueriesPerClaim,
+        maxEvidencePerClaim=maxEvidencePerClaim,
+        maxTotalEvidence=maxTotalEvidence,
         modelA=settings.GONKA_MODEL_A,
         modelB=settings.GONKA_MODEL_B,
         judgeModel=settings.GONKA_JUDGE_MODEL,
@@ -86,6 +110,8 @@ def createApp(
     *,
     settings: Settings | None = None,
     verificationService: VerificationService | None = None,
+    verificationJobService: VerificationJobService | None = None,
+    trendingTopicsService: TrendingTopicsService | None = None,
 ) -> FastAPI:
     appSettings = settings or getSettings()
     configureLogging(appSettings.LOG_LEVEL)
@@ -102,10 +128,25 @@ def createApp(
             apiKey=appSettings.SUPABASE_KEY or "",
         )
         resources.append(supabaseAuthClient)
+    if trendingTopicsService is None:
+        topicsProvider: BraveNewsTopicsProvider | None = None
+        if appSettings.searchConfigured:
+            topicsProvider = BraveNewsTopicsProvider(
+                apiKey=appSettings.BRAVE_SEARCH_API_KEY or "",
+                baseUrl=str(appSettings.BRAVE_SEARCH_BASE_URL),
+                country=appSettings.BRAVE_SEARCH_COUNTRY,
+                searchLanguage=appSettings.BRAVE_SEARCH_LANGUAGE,
+            )
+            resources.append(topicsProvider)
+        topicsService = TrendingTopicsService(topicsProvider)
+    else:
+        topicsService = trendingTopicsService
+    jobService = verificationJobService or VerificationJobService(service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        await jobService.close()
         for resource in resources:
             close = getattr(resource, "close", None)
             if close is not None:
@@ -129,6 +170,8 @@ def createApp(
         max_age=600,
     )
     application.state.verificationService = service
+    application.state.verificationJobService = jobService
+    application.state.trendingTopicsService = topicsService
     application.state.settings = appSettings
     application.state.supabaseAuthClient = supabaseAuthClient
     application.state.persistenceBackend = (

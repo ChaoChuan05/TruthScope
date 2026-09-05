@@ -9,6 +9,19 @@ class GonkaUnavailableError(TruthScopeError):
 class InvalidModelOutputError(TruthScopeError):
     """Raised when provider output fails strict schema validation."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str,
+        validationPaths: tuple[str, ...] = (),
+        outputLength: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.validationPaths = validationPaths
+        self.outputLength = outputLength
+
 
 class RetrievalError(TruthScopeError):
     """Raised when an evidence adapter cannot safely retrieve content."""
