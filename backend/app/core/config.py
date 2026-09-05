@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     GONKA_BASE_URL: HttpUrl = HttpUrl("https://api.gonkarouter.io")
     GONKA_API_KEY: str | None = None
     GONKA_ORCHESTRATOR_MODEL: str = "MiniMaxAI/MiniMax-M2.7"
-    GONKA_MODEL_A: str = "moonshotai/Kimi-K2.6"
-    GONKA_MODEL_B: str = "MiniMaxAI/MiniMax-M2.7"
-    GONKA_JUDGE_MODEL: str = "deepseek-ai/DeepSeek-V4-Flash-0731"
+    GONKA_MODEL_A: str = "MiniMaxAI/MiniMax-M2.7"
+    GONKA_MODEL_B: str = "deepseek-ai/DeepSeek-V4-Flash-0731"
+    GONKA_JUDGE_MODEL: str = "MiniMaxAI/MiniMax-M2.7"
     GONKA_BIAS_AUDITOR_MODEL: str = "MiniMaxAI/MiniMax-M2.7"
     GONKA_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0, le=600)
     GONKA_MAX_RETRIES: int = Field(default=2, ge=0, le=5)
@@ -102,14 +102,9 @@ class Settings(BaseSettings):
         return ",".join(dict.fromkeys(origins))
 
     @model_validator(mode="after")
-    def gonkaModelsMustBeDistinct(self) -> "Settings":
-        configuredModels = {
-            self.GONKA_MODEL_A,
-            self.GONKA_MODEL_B,
-            self.GONKA_JUDGE_MODEL,
-        }
-        if len(configuredModels) != 3:
-            raise ValueError("Gonka verifier A, verifier B, and judge models must be distinct.")
+    def gonkaVerifierModelsMustBeDistinct(self) -> "Settings":
+        if self.GONKA_MODEL_A == self.GONKA_MODEL_B:
+            raise ValueError("Gonka verifier A and verifier B models must be distinct.")
         return self
 
 

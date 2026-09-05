@@ -102,8 +102,9 @@ frontend/backend stack with root <code>compose.yaml</code>. Container and AWS EC
 - <code>.env.example</code>: documented environment-variable template
 - local <code>.env</code>: secrets and machine configuration; never commit
 
-Verifier A, verifier B, and consensus judge model IDs must be distinct. Startup rejects duplicate
-IDs. Other model availability depends on Gonka account routing.
+Verifier A and verifier B model IDs must be distinct. The consensus judge may reuse one verifier
+model when provider availability leaves only two suitable models online. Other model availability
+depends on Gonka account routing.
 
 The frontend uses the resumable job endpoints. A job continues after page refresh and the browser
 stores only its opaque job ID, start time, and submitted language. The job registry is

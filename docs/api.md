@@ -291,8 +291,8 @@ than inferred from publisher identity.
 ~~~json
 {
   "taskName": "verifierModelA",
-  "requestedModel": "moonshotai/Kimi-K2.6",
-  "servedModel": "moonshotai/Kimi-K2.6",
+  "requestedModel": "MiniMaxAI/MiniMax-M2.7",
+  "servedModel": "MiniMaxAI/MiniMax-M2.7",
   "requestId": "gonka-request-id",
   "providerResponseId": "provider-response-id",
   "latencyMs": 12500,

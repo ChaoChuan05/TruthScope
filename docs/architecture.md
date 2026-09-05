@@ -299,14 +299,15 @@ Default roles:
 | Role | Default model |
 |---|---|
 | Claim extraction; optional full-mode planning/context | <code>MiniMaxAI/MiniMax-M2.7</code> |
-| Verifier A | <code>moonshotai/Kimi-K2.6</code> |
-| Verifier B | <code>MiniMaxAI/MiniMax-M2.7</code> |
-| Consensus judge | <code>deepseek-ai/DeepSeek-V4-Flash-0731</code> |
+| Verifier A | <code>MiniMaxAI/MiniMax-M2.7</code> |
+| Verifier B | <code>deepseek-ai/DeepSeek-V4-Flash-0731</code> |
+| Consensus judge | <code>MiniMaxAI/MiniMax-M2.7</code> |
 | Bias auditor | <code>MiniMaxAI/MiniMax-M2.7</code> |
 
-Verifier A, verifier B, and judge must use three distinct configured IDs. Startup rejects
-duplicates. Orchestration and audit roles may reuse a model because they do not count as independent
-verifier votes.
+Verifier A and verifier B must use distinct configured IDs. The judge may reuse one verifier model
+when provider availability leaves only two suitable models online; it synthesizes the two preserved
+verifier analyses but does not count as an additional independent vote. Orchestration and audit
+roles may also reuse a model because they do not count as independent verifier votes.
 
 Each successful call records:
 

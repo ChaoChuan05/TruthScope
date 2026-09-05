@@ -35,33 +35,36 @@ def test_publicationAndRetrievalDates_remainDistinct() -> None:
     assert serialized["source"]["publicationDate"] != serialized["source"]["retrievalTimestamp"]
 
 
-def test_defaultGonkaRoles_useThreeDistinctModels() -> None:
+def test_defaultGonkaRoles_useDistinctVerifierModels() -> None:
     settings = Settings(_env_file=None)
-    assert (
-        len(
-            {
-                settings.GONKA_MODEL_A,
-                settings.GONKA_MODEL_B,
-                settings.GONKA_JUDGE_MODEL,
-            }
-        )
-        == 3
-    )
-    assert settings.GONKA_JUDGE_MODEL == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert settings.GONKA_MODEL_A != settings.GONKA_MODEL_B
+    assert settings.GONKA_MODEL_A == "MiniMaxAI/MiniMax-M2.7"
+    assert settings.GONKA_MODEL_B == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert settings.GONKA_JUDGE_MODEL == "MiniMaxAI/MiniMax-M2.7"
     assert settings.GONKA_REDUCED_CALLS is True
     assert settings.MAX_EVIDENCE_QUERIES_PER_CLAIM == 1
     assert settings.MAX_EVIDENCE_PER_CLAIM == 6
     assert settings.MAX_TOTAL_EVIDENCE == 8
 
 
-def test_duplicateJudgeModel_isRejected() -> None:
-    with pytest.raises(ValidationError, match="must be distinct"):
+def test_duplicateVerifierModel_isRejected() -> None:
+    with pytest.raises(ValidationError, match="verifier A and verifier B models must be distinct"):
         Settings(
             _env_file=None,
             GONKA_MODEL_A="model-a",
-            GONKA_MODEL_B="model-b",
+            GONKA_MODEL_B="model-a",
             GONKA_JUDGE_MODEL="model-b",
         )
+
+
+def test_judgeMayReuseVerifierModel() -> None:
+    settings = Settings(
+        _env_file=None,
+        GONKA_MODEL_A="model-a",
+        GONKA_MODEL_B="model-b",
+        GONKA_JUDGE_MODEL="model-a",
+    )
+    assert settings.GONKA_JUDGE_MODEL == settings.GONKA_MODEL_A
 
 
 def test_exampleEnvironment_acceptsBlankOptionalSettings(monkeypatch: pytest.MonkeyPatch) -> None:

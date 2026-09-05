@@ -144,9 +144,9 @@ Use backend-only Supabase secret or legacy <code>service_role</code> key for
 | <code>GONKA_BASE_URL</code> | <code>https://api.gonkarouter.io</code> | Gonka base |
 | <code>GONKA_API_KEY</code> | empty | Required for live AI |
 | <code>GONKA_ORCHESTRATOR_MODEL</code> | MiniMax M2.7 | Claim extraction; planning/context only when reduced-call mode is off |
-| <code>GONKA_MODEL_A</code> | Kimi K2.6 | Verifier A |
-| <code>GONKA_MODEL_B</code> | MiniMax M2.7 | Verifier B |
-| <code>GONKA_JUDGE_MODEL</code> | DeepSeek V4 Flash | Consensus judge |
+| <code>GONKA_MODEL_A</code> | MiniMax M2.7 | Verifier A |
+| <code>GONKA_MODEL_B</code> | DeepSeek V4 Flash | Verifier B |
+| <code>GONKA_JUDGE_MODEL</code> | MiniMax M2.7 | Consensus judge |
 | <code>GONKA_BIAS_AUDITOR_MODEL</code> | MiniMax M2.7 | Bias auditor |
 | <code>GONKA_TIMEOUT_SECONDS</code> | <code>30</code> | Orchestration timeout |
 | <code>GONKA_MAX_RETRIES</code> | <code>2</code> | Orchestration retries |
@@ -173,8 +173,8 @@ Use backend-only Supabase secret or legacy <code>service_role</code> key for
 | <code>SUPABASE_URL</code> | empty | Auth and database API |
 | <code>SUPABASE_KEY</code> | empty | Backend-only Auth/RPC key |
 
-Verifier A, verifier B, and judge model IDs must be distinct. Application startup fails when they
-duplicate.
+Verifier A and verifier B model IDs must be distinct. The judge may reuse either verifier model
+when provider availability leaves only two suitable models online.
 
 ## 5. Prepare Supabase
 
